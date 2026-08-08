@@ -47,16 +47,20 @@ build-*/
 # CMake generated files
 CMakeFiles/
 CMakeCache.txt
+CTestTestfile.cmake
 cmake_install.cmake
 Makefile
 install_manifest.txt
 compile_commands.json
+.qt/
 
 # Temporary files
 *.tmp
 *.log
 *.bak
 *.swp
+.DS_Store
+*.user
 
 # vcpkg
 vcpkg_installed/
