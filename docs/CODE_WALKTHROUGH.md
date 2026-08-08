@@ -29,8 +29,11 @@ swap-alert/
 │   ├── core/
 │   │   ├── AlertEngine.*
 │   │   ├── AlertTier.hpp
+│   │   ├── DiagnosticLogger.*
 │   │   ├── IMonotonicClock.hpp
 │   │   ├── ISwapReader.hpp
+│   │   ├── Logging.*
+│   │   ├── ProcessGrouping.*
 │   │   ├── SettingsStore.*
 │   │   ├── SwapInfo.hpp
 │   │   └── SwapMonitor.*
@@ -38,12 +41,14 @@ swap-alert/
 │   │   ├── IAutostartService.hpp
 │   │   ├── INotificationService.hpp
 │   │   ├── IProcessService.hpp
+│   │   ├── ISystemEventMonitor.hpp
 │   │   └── macos/
 │   │       ├── MacAutostartService.*
 │   │       ├── MacContinuousClock.*
 │   │       ├── MacNotificationService.*
 │   │       ├── MacProcessService.*
-│   │       └── MacSwapReader.*
+│   │       ├── MacSwapReader.*
+│   │       └── MacSystemEventMonitor.*
 │   └── ui/
 │       ├── CleanupDialog.*
 │       ├── Format.hpp
@@ -53,7 +58,9 @@ swap-alert/
 │       └── WarningDialog.*
 └── tests/
     ├── AlertEngineTests.cpp
-    └── SwapMonitorTests.cpp
+    ├── ProcessGroupingTests.cpp
+    ├── SwapMonitorTests.cpp
+    └── UiSafetyTests.cpp
 ```
 
 The folders have distinct responsibilities:
@@ -210,8 +217,35 @@ The platform interfaces describe what the core application needs without prescri
 - `INotificationService` sends notifications.
 - `IProcessService` lists and terminates applications.
 - `IAutostartService` manages launch at login.
+- `ISystemEventMonitor` reports sleep, wake, session, shutdown, and desktop-restart events.
 
 This pattern is sometimes called a port-and-adapter or dependency-inversion architecture.
+
+## System lifecycle integration
+
+`MacSystemEventMonitor.mm` subscribes to `NSWorkspace` notifications. It translates native notifications into the portable `SystemEvent` enum instead of allowing Objective-C types to leak into the rest of the application.
+
+Before sleep or when the login session becomes inactive, `main.cpp` calls `SwapMonitor::suspendForSystemEvent()`. This stops the timer and rejects manual refreshes during suspension. After wake and session activation, `resumeAfterSystemEvent()` restarts the timer and immediately reads a fresh sample. The alert engine still uses `mach_continuous_time`, so cooldown and snooze durations account for time spent asleep without inventing a swap-growth sample.
+
+SystemUIServer owns macOS menu-bar extras. If it or Finder restarts, Qt can temporarily lose the visible status item. The native event monitor detects those application launches and asks `TrayController` to show its existing icon again.
+
+The lifecycle unit test injects a fake reader, starts the monitor, suspends it, verifies that refresh produces no sample, and verifies that resume produces exactly one fresh sample.
+
+## Structured diagnostic logging
+
+`Logging.hpp` declares Qt logging categories such as `swapalert.monitor`, `swapalert.alerts`, and `swapalert.system`. Categories make a mixed log easier to filter than unlabelled print statements.
+
+`DiagnosticLogger::install()` installs a Qt message handler at startup. Each record contains a UTC timestamp, severity, category, and message. The file is stored under the application's `QStandardPaths::AppLocalDataLocation`, rotates at 1 MB, and retains two prior files. Messages are also forwarded to Qt's original handler, so they remain visible in a development terminal.
+
+The tray action **Open Logs Folder…** resolves the path at runtime and opens it in Finder. Logging records numeric process IDs and operation results, but not application document contents.
+
+## Packaging, signing, and notarization
+
+`packaging/macos/package.sh` performs a Release configuration, builds and tests it, installs the app into a staging directory, and runs Qt's `macdeployqt`. That deployment step copies the Qt frameworks and plugins into the bundle and rewrites Mach-O library references so the release no longer depends on Homebrew paths.
+
+Without a signing identity the script applies an ad-hoc signature for local testing. With `SIGN_IDENTITY`, `macdeployqt` signs nested components using the hardened runtime and timestamp options intended for notarization. The script then creates and signs a compressed DMG. If `NOTARIZE=1`, it submits that DMG through `notarytool`, waits for the result, and staples Apple's ticket.
+
+`packaging/macos/verify-package.sh` mounts the finished image read-only, checks the bundle signature and property list, and scans every Mach-O file for development-only Homebrew dependencies. See [`docs/RELEASING.md`](RELEASING.md) for credential setup and the release checklist.
 
 ## 4. Reading swap usage from macOS
 
@@ -498,6 +532,17 @@ UNNotificationRequest* request =
 
 A notification delegate permits banners to appear while Swap Alert is active. Tier 1 is silent; Tier 2 and Tier 3 use the default notification sound.
 
+Notification operations are asynchronous and return a `NotificationResult`. The result reports both authorization state and delivery errors:
+
+- `NotDetermined`: macOS has not asked the user yet
+- `Denied`: notifications are disabled for Swap Alert
+- `Authorized`: alerts may be delivered
+- `Unknown`: the service could not determine a usable state
+
+Settings displays this state and offers either Request Permission or Open Settings. Sending a notification first checks authorization, requests it when necessary, and reports failures back on Qt's main thread.
+
+Tier 1 normally has no application window, so a denied permission or delivery error opens `WarningDialog` as a fallback. Tier 2 already has a warning window and adds the failure explanation there. Tier 3 always opens guided cleanup, so the critical action remains visible even without Notification Center.
+
 ## 14. Alert presentation
 
 `main.cpp` decides how each triggered tier is presented:
@@ -510,19 +555,28 @@ The core `AlertEngine` does not know about any of these windows. It only returns
 
 ## 15. Listing running applications
 
-[`src/platform/macos/MacProcessService.mm`](../src/platform/macos/MacProcessService.mm) uses `NSWorkspace` to enumerate visible macOS applications.
+[`src/platform/macos/MacProcessService.mm`](../src/platform/macos/MacProcessService.mm) uses `NSWorkspace` to enumerate visible macOS applications and `libproc` to snapshot the current user's processes.
 
 It excludes:
 
 - Swap Alert itself
 - Background-only applications
 - Applications that have already terminated
+- Core system applications such as Finder, Dock, loginwindow, and SystemUIServer
+- Applications not owned by the current user
 
-For each application, it calls `proc_pid_rusage` and reads `ri_phys_footprint` as an estimate of physical memory consumption.
+For each process, it calls `proc_pid_rusage` and reads `ri_phys_footprint` as an estimate of physical memory consumption.
 
-The list is sorted from highest to lowest memory use.
+[`src/core/ProcessGrouping.cpp`](../src/core/ProcessGrouping.cpp) groups process snapshots under each visible application. A process belongs to an application when it is:
 
-This is only an estimate for multi-process applications. A browser's helper processes, for example, may not be included in its primary GUI process footprint.
+- The visible application's main process
+- A current-user descendant of that process
+- A helper with the same bundle identifier or a bundle identifier beneath it
+- A descendant of one of those matching helpers
+
+Another visible application's root process is never absorbed into the parent group. Memory is summed for each group, process count is recorded, and the list is sorted from highest to lowest aggregate memory use.
+
+This remains an estimate because macOS applications can use unrelated services that cannot be attributed reliably, but browsers and Electron applications are represented more accurately than a main-process-only reading.
 
 ## 16. Safe application cleanup
 
@@ -531,7 +585,7 @@ This is only an estimate for multi-process applications. A browser's helper proc
 There are two separate actions:
 
 - `Quit Selected` requests normal termination.
-- `Force Quit Selected` requires confirmation and requests forced termination.
+- `Force Quit Selected` requires a prior normal quit request, requires the application to still be running, then asks for explicit confirmation.
 
 The native calls are:
 
@@ -540,7 +594,11 @@ application.terminate
 application.forceTerminate
 ```
 
-Swap Alert never automatically selects or terminates an application. Force quit is deliberately separated because it can destroy unsaved work.
+The cleanup table preserves selection across refreshes, displays grouped process count and memory, and reports Quit requested, Still running, Force quit requested, or Failed. A delayed refresh gives macOS time to deliver the normal quit request.
+
+Before every termination request, the macOS adapter rechecks the process owner, activation policy, protected-application list, and Swap Alert's own PID. This protects against stale rows and PID reuse between listing and action.
+
+Swap Alert never automatically selects or terminates an application. Force quit is deliberately gated because it can destroy unsaved work.
 
 The app also requires no root privileges and cannot terminate another user's processes through this UI.
 
@@ -573,6 +631,21 @@ The suite covers:
 - Failed swap reads do not evaluate or emit a sample
 - Pausing and resuming monitoring starts a fresh alert episode
 - Batched settings updates persist all values and emit one change signal
+
+[`tests/ProcessGroupingTests.cpp`](../tests/ProcessGroupingTests.cpp) verifies:
+
+- Descendant and bundle-helper aggregation
+- Exclusion of other users' processes
+- Separation of multiple visible application roots
+- Protection against similar but unrelated bundle identifiers
+- Aggregate-memory and name sorting
+
+[`tests/UiSafetyTests.cpp`](../tests/UiSafetyTests.cpp) uses fake platform services with real Qt dialogs. It verifies:
+
+- Denied notification permission offers a System Settings action
+- Requesting permission updates the Settings status
+- All three test-alert buttons emit the correct tier
+- Force Quit remains disabled until normal quit was requested and the application remains running
 
 The core tests use small values such as 100, 200, and 300 bytes. The unit itself does not matter to the state machine, which makes the cases easy to read.
 
@@ -618,7 +691,7 @@ These changes are small enough to attempt while learning the codebase:
 5. Add a keyboard shortcut that opens the dashboard.
 6. Record the last 60 readings and display a small history table.
 7. Extend the fake-reader monitor tests to cover live threshold changes.
-8. Combine memory usage for multi-process applications.
+8. Add application icons to the guided cleanup table.
 9. Add `LinuxSwapReader` while keeping all existing core tests unchanged.
 
 ## 21. Good next architectural improvements
@@ -626,7 +699,7 @@ These changes are small enough to attempt while learning the codebase:
 As the project grows, consider:
 
 - Structured logging with `QLoggingCategory` or Apple `OSLog`
-- A notification result/error callback instead of ignoring delivery errors
+- Notification categories with actions such as Open Dashboard and Snooze
 - Process grouping for browsers and Electron applications
 - A short swap-history model separated from the UI
 - CMake presets for debug, release, and CI builds

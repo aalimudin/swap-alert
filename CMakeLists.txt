@@ -16,6 +16,9 @@ qt_standard_project_setup()
 
 set(SWAP_ALERT_CORE_SOURCES
     src/core/AlertEngine.cpp
+    src/core/DiagnosticLogger.cpp
+    src/core/Logging.cpp
+    src/core/ProcessGrouping.cpp
     src/core/SettingsStore.cpp
     src/core/SwapMonitor.cpp
 )
@@ -26,6 +29,7 @@ set(SWAP_ALERT_PLATFORM_SOURCES
     src/platform/macos/MacNotificationService.mm
     src/platform/macos/MacProcessService.mm
     src/platform/macos/MacSwapReader.mm
+    src/platform/macos/MacSystemEventMonitor.mm
 )
 
 set(SWAP_ALERT_UI_SOURCES
@@ -65,6 +69,8 @@ set_target_properties(SwapAlert PROPERTIES
     OUTPUT_NAME "Swap Alert"
 )
 
+install(TARGETS SwapAlert BUNDLE DESTINATION . COMPONENT Runtime)
+
 enable_testing()
 
 qt_add_executable(SwapAlertTests
@@ -83,6 +89,7 @@ add_test(NAME SwapAlertTests COMMAND SwapAlertTests)
 qt_add_executable(SwapMonitorTests
     tests/SwapMonitorTests.cpp
     src/core/AlertEngine.cpp
+    src/core/Logging.cpp
     src/core/SettingsStore.cpp
     src/core/SwapMonitor.cpp
 )
@@ -90,3 +97,24 @@ target_include_directories(SwapMonitorTests PRIVATE src)
 target_link_libraries(SwapMonitorTests PRIVATE Qt6::Core Qt6::Test)
 
 add_test(NAME SwapMonitorTests COMMAND SwapMonitorTests)
+
+qt_add_executable(ProcessGroupingTests
+    tests/ProcessGroupingTests.cpp
+    src/core/ProcessGrouping.cpp
+)
+target_include_directories(ProcessGroupingTests PRIVATE src)
+target_link_libraries(ProcessGroupingTests PRIVATE Qt6::Core Qt6::Test)
+
+add_test(NAME ProcessGroupingTests COMMAND ProcessGroupingTests)
+
+qt_add_executable(UiSafetyTests
+    tests/UiSafetyTests.cpp
+    src/core/AlertEngine.cpp
+    src/core/SettingsStore.cpp
+    src/ui/CleanupDialog.cpp
+    src/ui/SettingsDialog.cpp
+)
+target_include_directories(UiSafetyTests PRIVATE src)
+target_link_libraries(UiSafetyTests PRIVATE Qt6::Core Qt6::Widgets Qt6::Test)
+
+add_test(NAME UiSafetyTests COMMAND UiSafetyTests)

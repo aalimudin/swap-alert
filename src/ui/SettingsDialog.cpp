@@ -6,7 +6,9 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QMessageBox>
+#include <QPointer>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QVBoxLayout>
@@ -26,10 +28,11 @@ QDoubleSpinBox* thresholdSpinBox(QWidget* parent)
 }
 
 SettingsDialog::SettingsDialog(SettingsStore& settings, IAutostartService& autostartService,
-    QWidget* parent)
+    INotificationService& notificationService, QWidget* parent)
     : QDialog(parent)
     , m_settings(settings)
     , m_autostartService(autostartService)
+    , m_notificationService(notificationService)
     , m_tier1(thresholdSpinBox(this))
     , m_tier2(thresholdSpinBox(this))
     , m_tier3(thresholdSpinBox(this))
@@ -37,6 +40,8 @@ SettingsDialog::SettingsDialog(SettingsStore& settings, IAutostartService& autos
     , m_cooldown(new QSpinBox(this))
     , m_monitoring(new QCheckBox(QStringLiteral("Enable monitoring"), this))
     , m_startAtLogin(new QCheckBox(QStringLiteral("Start Swap Alert at login"), this))
+    , m_notificationStatus(new QLabel(QStringLiteral("Checking notification permission…"), this))
+    , m_notificationAction(new QPushButton(QStringLiteral("Request Permission"), this))
 {
     setWindowTitle(QStringLiteral("Swap Alert Settings"));
     setMinimumWidth(430);
@@ -56,10 +61,19 @@ SettingsDialog::SettingsDialog(SettingsStore& settings, IAutostartService& autos
     auto* testTier1 = new QPushButton(QStringLiteral("Test Tier 1"), this);
     auto* testTier2 = new QPushButton(QStringLiteral("Test Tier 2"), this);
     auto* testTier3 = new QPushButton(QStringLiteral("Test Tier 3"), this);
+    testTier1->setObjectName(QStringLiteral("testTier1Button"));
+    testTier2->setObjectName(QStringLiteral("testTier2Button"));
+    testTier3->setObjectName(QStringLiteral("testTier3Button"));
+    m_notificationStatus->setObjectName(QStringLiteral("notificationStatusLabel"));
+    m_notificationAction->setObjectName(QStringLiteral("notificationActionButton"));
     auto* testButtons = new QHBoxLayout;
     testButtons->addWidget(testTier1);
     testButtons->addWidget(testTier2);
     testButtons->addWidget(testTier3);
+
+    auto* notificationRow = new QHBoxLayout;
+    notificationRow->addWidget(m_notificationStatus, 1);
+    notificationRow->addWidget(m_notificationAction);
 
     auto* restoreButton = new QPushButton(QStringLiteral("Restore Defaults"), this);
     auto* buttonBox = new QDialogButtonBox(QDialogButtonBox::Cancel | QDialogButtonBox::Save, this);
@@ -74,6 +88,8 @@ SettingsDialog::SettingsDialog(SettingsStore& settings, IAutostartService& autos
     layout->addWidget(m_monitoring);
     layout->addWidget(m_startAtLogin);
     layout->addSpacing(8);
+    layout->addLayout(notificationRow);
+    layout->addSpacing(8);
     layout->addLayout(testButtons);
     layout->addSpacing(8);
     layout->addLayout(bottom);
@@ -84,6 +100,8 @@ SettingsDialog::SettingsDialog(SettingsStore& settings, IAutostartService& autos
     connect(testTier1, &QPushButton::clicked, this, [this] { emit testAlertRequested(1); });
     connect(testTier2, &QPushButton::clicked, this, [this] { emit testAlertRequested(2); });
     connect(testTier3, &QPushButton::clicked, this, [this] { emit testAlertRequested(3); });
+    connect(m_notificationAction, &QPushButton::clicked, this,
+        &SettingsDialog::handleNotificationAction);
 
     reload();
 }
@@ -97,6 +115,7 @@ void SettingsDialog::reload()
     m_cooldown->setValue(m_settings.cooldownMinutes());
     m_monitoring->setChecked(m_settings.monitoringEnabled());
     m_startAtLogin->setChecked(m_autostartService.isEnabled());
+    refreshNotificationStatus();
 }
 
 void SettingsDialog::save()
@@ -133,4 +152,67 @@ void SettingsDialog::restoreDefaults()
     m_cooldown->setValue(15);
     m_monitoring->setChecked(true);
     m_startAtLogin->setChecked(false);
+}
+
+void SettingsDialog::refreshNotificationStatus()
+{
+    QPointer<SettingsDialog> self(this);
+    m_notificationService.authorizationStatus([self](const NotificationResult& result) {
+        if (self) {
+            self->updateNotificationStatus(result);
+        }
+    });
+}
+
+void SettingsDialog::handleNotificationAction()
+{
+    if (m_notificationAuthorization == NotificationAuthorizationStatus::Denied
+        || m_notificationAuthorization == NotificationAuthorizationStatus::Authorized) {
+        QString error;
+        if (!m_notificationService.openNotificationSettings(error)) {
+            QMessageBox::warning(this, QStringLiteral("Notification Settings"), error);
+        }
+        return;
+    }
+
+    m_notificationAction->setEnabled(false);
+    m_notificationStatus->setText(QStringLiteral("Requesting notification permission…"));
+    QPointer<SettingsDialog> self(this);
+    m_notificationService.requestAuthorization([self](const NotificationResult& result) {
+        if (self) {
+            self->updateNotificationStatus(result);
+        }
+    });
+}
+
+void SettingsDialog::updateNotificationStatus(const NotificationResult& result)
+{
+    m_notificationAuthorization = result.authorization;
+    m_notificationAction->setEnabled(true);
+
+    switch (result.authorization) {
+    case NotificationAuthorizationStatus::Authorized:
+        m_notificationStatus->setText(QStringLiteral("Notifications: Allowed"));
+        m_notificationStatus->setStyleSheet(QStringLiteral("color: #218739;"));
+        m_notificationAction->setText(QStringLiteral("Open Settings…"));
+        break;
+    case NotificationAuthorizationStatus::Denied:
+        m_notificationStatus->setText(QStringLiteral("Notifications: Disabled"));
+        m_notificationStatus->setStyleSheet(QStringLiteral("color: #c62828;"));
+        m_notificationAction->setText(QStringLiteral("Open Settings…"));
+        break;
+    case NotificationAuthorizationStatus::NotDetermined:
+        m_notificationStatus->setText(QStringLiteral("Notifications: Permission not requested"));
+        m_notificationStatus->setStyleSheet({});
+        m_notificationAction->setText(QStringLiteral("Request Permission"));
+        break;
+    case NotificationAuthorizationStatus::Unknown:
+    default:
+        m_notificationStatus->setText(result.message.isEmpty()
+                ? QStringLiteral("Notifications: Status unavailable")
+                : QStringLiteral("Notifications: %1").arg(result.message));
+        m_notificationStatus->setStyleSheet(QStringLiteral("color: #c62828;"));
+        m_notificationAction->setText(QStringLiteral("Try Again"));
+        break;
+    }
 }

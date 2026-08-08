@@ -18,6 +18,8 @@ public:
 
     void start();
     void refreshNow();
+    void suspendForSystemEvent();
+    void resumeAfterSystemEvent();
     void snoozeForMinutes(int minutes);
     void snoozeUntilRestart();
     [[nodiscard]] bool isSnoozed() const;
@@ -41,4 +43,5 @@ private:
     bool m_snoozeActive = false;
     bool m_snoozedUntilRestart = false;
     bool m_lastMonitoringEnabled = false;
+    bool m_systemSuspended = false;
 };

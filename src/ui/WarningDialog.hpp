@@ -12,7 +12,8 @@ class WarningDialog final : public QDialog {
 
 public:
     explicit WarningDialog(QWidget* parent = nullptr);
-    void showWarning(AlertTier tier, const SwapInfo& info);
+    void showWarning(AlertTier tier, const SwapInfo& info,
+        const QString& supplementalMessage = {});
 
 signals:
     void reviewRequested();
@@ -21,5 +22,5 @@ signals:
 private:
     QLabel* m_titleLabel;
     QLabel* m_usageLabel;
+    QLabel* m_explanationLabel;
 };
-
