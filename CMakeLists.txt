@@ -22,6 +22,7 @@ set(SWAP_ALERT_CORE_SOURCES
 
 set(SWAP_ALERT_PLATFORM_SOURCES
     src/platform/macos/MacAutostartService.mm
+    src/platform/macos/MacContinuousClock.mm
     src/platform/macos/MacNotificationService.mm
     src/platform/macos/MacProcessService.mm
     src/platform/macos/MacSwapReader.mm
@@ -30,6 +31,7 @@ set(SWAP_ALERT_PLATFORM_SOURCES
 set(SWAP_ALERT_UI_SOURCES
     src/ui/CleanupDialog.cpp
     src/ui/SettingsDialog.cpp
+    src/ui/StatusDialog.cpp
     src/ui/TrayController.cpp
     src/ui/WarningDialog.cpp
 )
@@ -77,3 +79,14 @@ set_source_files_properties(src/platform/macos/MacSwapReader.mm
 )
 
 add_test(NAME SwapAlertTests COMMAND SwapAlertTests)
+
+qt_add_executable(SwapMonitorTests
+    tests/SwapMonitorTests.cpp
+    src/core/AlertEngine.cpp
+    src/core/SettingsStore.cpp
+    src/core/SwapMonitor.cpp
+)
+target_include_directories(SwapMonitorTests PRIVATE src)
+target_link_libraries(SwapMonitorTests PRIVATE Qt6::Core Qt6::Test)
+
+add_test(NAME SwapMonitorTests COMMAND SwapMonitorTests)

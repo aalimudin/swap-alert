@@ -1,10 +1,10 @@
 #pragma once
 
 #include "core/AlertEngine.hpp"
+#include "core/IMonotonicClock.hpp"
 #include "core/ISwapReader.hpp"
 #include "core/SettingsStore.hpp"
 
-#include <QElapsedTimer>
 #include <QObject>
 #include <QTimer>
 #include <memory>
@@ -14,11 +14,12 @@ class SwapMonitor final : public QObject {
 
 public:
     SwapMonitor(std::unique_ptr<ISwapReader> reader, SettingsStore& settings,
-        QObject* parent = nullptr);
+        std::unique_ptr<IMonotonicClock> clock, QObject* parent = nullptr);
 
     void start();
     void refreshNow();
     void snoozeForMinutes(int minutes);
+    void snoozeUntilRestart();
     [[nodiscard]] bool isSnoozed() const;
 
 signals:
@@ -31,12 +32,13 @@ private slots:
 
 private:
     std::unique_ptr<ISwapReader> m_reader;
+    std::unique_ptr<IMonotonicClock> m_clock;
     SettingsStore& m_settings;
     AlertEngine m_alertEngine;
     QTimer m_timer;
-    QElapsedTimer m_clock;
     qint64 m_snoozedUntilMs = 0;
     bool m_started = false;
     bool m_snoozeActive = false;
+    bool m_snoozedUntilRestart = false;
     bool m_lastMonitoringEnabled = false;
 };

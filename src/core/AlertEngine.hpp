@@ -27,6 +27,8 @@ public:
 
 private:
     [[nodiscard]] AlertTier tierForUsage(quint64 usedBytes) const;
+    [[nodiscard]] AlertTier tierWithHysteresis(quint64 usedBytes) const;
+    [[nodiscard]] quint64 resetPointForTier(AlertTier tier) const;
 
     Configuration m_configuration;
     AlertTier m_currentTier = AlertTier::Normal;
