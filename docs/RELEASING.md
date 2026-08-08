@@ -1,4 +1,78 @@
-# Releasing Swap Alert for macOS
+# Releasing Swap Alert
+
+## Linux AppImage
+
+The AppImage is the primary full-featured Linux artifact. Build it on the oldest supported Linux baseline so its glibc dependency remains compatible with newer distributions. The packaging workflow builds and tests Swap Alert, installs a complete AppDir, asks `linuxdeploy` and its Qt plugin to bundle runtime dependencies, and emits a versioned AppImage under `dist/`.
+
+The build host also needs CMake, Ninja, a C++ compiler, Qt 6 development packages, `file`, AppStream CLI tools, and `desktop-file-validate` (usually provided by `desktop-file-utils`).
+
+Download the official `linuxdeploy` and Qt plugin AppImages into a tools directory, make them executable, then pass their paths to the package script:
+
+```bash
+mkdir -p tools
+curl -L -o tools/linuxdeploy-x86_64.AppImage \
+  https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+curl -L -o tools/linuxdeploy-plugin-qt-x86_64.AppImage \
+  https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+chmod +x tools/linuxdeploy*.AppImage
+
+LINUXDEPLOY="$PWD/tools/linuxdeploy-x86_64.AppImage" \
+LINUXDEPLOY_PLUGIN_QT="$PWD/tools/linuxdeploy-plugin-qt-x86_64.AppImage" \
+  ./packaging/linux/package-appimage.sh
+```
+
+Verify the dependency bundle, required desktop resources, AppStream metadata, Qt platform plugin, and headless startup:
+
+```bash
+./packaging/linux/verify-appimage.sh \
+  dist/Swap-Alert-0.1.0-x86_64.AppImage
+```
+
+Run the artifact directly after making it executable. AppImages are not installed system-wide:
+
+```bash
+chmod +x Swap-Alert-0.1.0-x86_64.AppImage
+./Swap-Alert-0.1.0-x86_64.AppImage
+```
+
+Do not build the release AppImage on a newer distribution and assume it will run on Ubuntu 22.04. Test the exact artifact on supported Ubuntu and Fedora releases, including GNOME and KDE tray/notification behavior.
+
+## Linux Flatpak
+
+The Flatpak uses the `org.kde.Platform` and `org.kde.Sdk` 6.11 runtime, which provides Qt 6. Install `flatpak-builder`, configure Flathub, and run:
+
+```bash
+flatpak remote-add --user --if-not-exists flathub \
+  https://dl.flathub.org/repo/flathub.flatpakrepo
+
+./packaging/linux/package-flatpak.sh
+./packaging/linux/verify-flatpak.sh dist/Swap-Alert-0.1.0.flatpak
+```
+
+The package script installs missing SDK/runtime dependencies for the current user by default. Use `INSTALL_DEPS=0` when CI or the build machine has already provisioned them.
+
+Install and run a local bundle with:
+
+```bash
+flatpak install --user dist/Swap-Alert-0.1.0.flatpak
+flatpak run com.swapalert.app
+```
+
+The Flatpak grants only display access, narrowly scoped notification/status-notifier D-Bus access, login1 event access, and permission to create its XDG autostart entry. Flatpak isolates host processes in a separate PID namespace, so guided host-application cleanup is unavailable. Swap Alert reports this limitation in the cleanup window. Use the AppImage when cleanup is required.
+
+Before publishing, test the exact Flatpak bundle on GNOME and KDE. Confirm swap readings, notifications, tray recovery, suspend/resume handling, settings persistence, and Flatpak-aware start-at-login behavior.
+
+## Linux release checklist
+
+1. Update the project version and AppStream release entry.
+2. Build and test the AppImage on the oldest supported build baseline.
+3. Run `verify-appimage.sh`, then test the same artifact on supported Ubuntu and Fedora releases.
+4. Build and verify the Flatpak bundle.
+5. Test GNOME and KDE tray, notification, suspend/resume, and autostart behavior.
+6. Confirm the Flatpak cleanup limitation is visible and the AppImage cleanup flow remains safe.
+7. Generate checksums for published artifacts and tag the exact source revision.
+
+## macOS DMG
 
 This project includes a repeatable release pipeline that builds, tests, deploys Qt frameworks, creates a DMG, and optionally performs Developer ID signing and Apple notarization.
 

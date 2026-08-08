@@ -1,6 +1,6 @@
 # Swap Alert
 
-Swap Alert is a lightweight macOS menu-bar utility that monitors system swap usage and escalates warnings through configurable alert tiers.
+Swap Alert is a lightweight macOS and Linux tray utility that monitors system swap usage and escalates warnings through configurable alert tiers.
 
 The macOS MVP currently includes:
 
@@ -23,7 +23,18 @@ The macOS MVP currently includes:
 - Live dashboard with current tier, swap utilization, thresholds, and manual refresh
 - Explicit paused and unavailable states in both the tray and dashboard
 
-Linux support is planned but not implemented yet. The release plan targets AppImage and Flatpak first, with optional RPM and DEB packages rather than assuming a Debian-based system. See [PLAN.md](PLAN.md) for the full roadmap.
+The Linux implementation also includes:
+
+- Swap readings from `/proc/meminfo`
+- Freedesktop notifications over the desktop session D-Bus, with a tray-message fallback
+- Current-user GUI application discovery through XDG desktop entries and `/proc`
+- Aggregated resident-memory estimates for application processes and their children
+- Ownership and eligibility checks immediately before sending `SIGTERM` or confirmed `SIGKILL`
+- XDG autostart integration
+- Suspend, wake, shutdown, active-session, and desktop-service recovery events through D-Bus
+- A suspend-aware `CLOCK_BOOTTIME` clock for cooldown and snooze timing
+
+Reproducible AppImage and Flatpak packaging workflows are included under `packaging/linux`. The AppImage provides the full feature set. Flatpak provides monitoring and alerts, but its PID namespace intentionally prevents guided cleanup of host applications. Optional RPM and DEB packages follow these cross-distribution formats. See [PLAN.md](PLAN.md) for the full roadmap.
 
 ## Learning documentation
 
@@ -40,6 +51,14 @@ Swap Alert never quits applications automatically. The cleanup window only shows
 - Qt 6.5 or later
 - CMake 3.24 or later
 - Ninja
+
+On Fedora:
+
+```bash
+sudo dnf install gcc-c++ cmake ninja-build qt6-qtbase-devel qt6-qttools-devel
+```
+
+On Ubuntu or Debian, use the package list in [PLAN.md](PLAN.md).
 
 With Homebrew:
 
@@ -58,11 +77,26 @@ cmake -S . -B build \
 cmake --build build --parallel
 ```
 
+On Linux, omit `CMAKE_PREFIX_PATH` when Qt is installed in the system prefix:
+
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build --parallel
+```
+
 ## Run
 
 ```bash
 open "build/Swap Alert.app"
 ```
+
+On Linux:
+
+```bash
+./build/swap-alert
+```
+
+A system tray is required. GNOME users may need to enable a status-notifier/AppIndicator shell extension.
 
 Swap Alert runs as a menu-bar-only application, so it does not show an icon in the Dock. macOS asks for notification permission on first launch.
 
@@ -77,13 +111,35 @@ For a local ad-hoc signed package:
 
 Open the DMG and drag **Swap Alert** to **Applications**. Developer ID signing and notarization are opt-in because they require Apple credentials; see [docs/RELEASING.md](docs/RELEASING.md).
 
+## Create Linux packages
+
+With `linuxdeploy` and `linuxdeploy-plugin-qt` installed:
+
+```bash
+LINUXDEPLOY=/path/to/linuxdeploy-x86_64.AppImage \
+LINUXDEPLOY_PLUGIN_QT=/path/to/linuxdeploy-plugin-qt-x86_64.AppImage \
+  ./packaging/linux/package-appimage.sh
+
+./packaging/linux/verify-appimage.sh \
+  dist/Swap-Alert-0.1.0-x86_64.AppImage
+```
+
+With `flatpak-builder` and the Flathub remote configured:
+
+```bash
+./packaging/linux/package-flatpak.sh
+./packaging/linux/verify-flatpak.sh dist/Swap-Alert-0.1.0.flatpak
+```
+
+See [docs/RELEASING.md](docs/RELEASING.md) for tool setup, sandbox limitations, and the Linux release checklist.
+
 ## Test
 
 ```bash
 ctest --test-dir build --output-on-failure
 ```
 
-The tests cover tier transitions, direct escalation, stable hysteresis, cooldown behavior, snooze expiration, monitoring and system suspend/resume behavior, read failures, notification-permission UI, force-quit gating, process grouping and memory aggregation, and a live macOS swap reading.
+The tests cover tier transitions, direct escalation, stable hysteresis, cooldown behavior, snooze expiration, monitoring and system suspend/resume behavior, read failures, notification-permission UI, force-quit gating, process grouping and memory aggregation, and a live platform swap reading.
 
 ## Permissions and troubleshooting
 
@@ -92,8 +148,11 @@ The tests cover tier transitions, direct escalation, stable hysteresis, cooldown
 - **The menu-bar icon disappears:** the app listens for desktop and session restarts and re-adds it automatically. If it does not return, relaunch Swap Alert.
 - **Swap usage is unavailable:** choose **Open Logs Folder…** from the tray menu and inspect `swap-alert.log`.
 - **Gatekeeper blocks a local DMG:** ad-hoc packages are only for local testing. Public distribution needs Developer ID signing and Apple notarization.
+- **No Linux tray icon appears:** confirm that the desktop provides a system tray or status-notifier host. On GNOME, enable a compatible shell extension.
+- **Linux notifications do not appear:** confirm that a notification daemon owns `org.freedesktop.Notifications` on the session D-Bus. Swap Alert falls back to a tray message when possible.
+- **An expected Linux app is absent from Review Applications:** only current-user processes that map unambiguously to a visible XDG desktop entry are shown. Services and hidden desktop entries are intentionally excluded.
 
-Diagnostic logs are stored under the application's `~/Library/Application Support/…/logs/` directory; **Open Logs Folder…** resolves the exact path. The active log rotates at 1 MB and keeps two older files. Logs contain lifecycle state, swap byte counts, alert tiers, and operation results; they do not record document contents.
+Diagnostic logs use the platform application-data directory (`~/Library/Application Support/…` on macOS and the XDG data location on Linux); **Open Logs Folder…** resolves the exact path. The active log rotates at 1 MB and keeps two older files. Logs contain lifecycle state, swap byte counts, alert tiers, and operation results; they do not record document contents.
 
 ## Current development limitations
 

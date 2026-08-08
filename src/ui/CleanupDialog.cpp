@@ -146,11 +146,15 @@ void CleanupDialog::refresh()
     }
     m_table->setSortingEnabled(true);
     m_table->sortItems(3, Qt::DescendingOrder);
-    m_summaryLabel->setText(applications.isEmpty()
+    const bool sandboxed = qEnvironmentVariableIsSet("FLATPAK_ID");
+    m_summaryLabel->setText(sandboxed
+            ? QStringLiteral("Guided host-application cleanup is unavailable in the Flatpak sandbox. Use the AppImage build for this feature.")
+            : applications.isEmpty()
             ? QStringLiteral("No eligible user applications are currently running.")
             : QStringLiteral("%1 eligible applications · approximately %2 total memory")
                   .arg(applications.size())
                   .arg(formatBytes(totalMemoryBytes)));
+    m_table->setEnabled(!sandboxed);
     updateSelectionState();
 }
 

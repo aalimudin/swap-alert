@@ -20,6 +20,7 @@ public:
     void ensureVisible();
     void updateSample(const SwapInfo& info, AlertTier tier);
     void showReadError(const QString& message);
+    void showNotification(const QString& title, const QString& message, AlertTier tier);
 
 signals:
     void dashboardRequested();

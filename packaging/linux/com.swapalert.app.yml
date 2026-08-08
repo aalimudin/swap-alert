@@ -1,0 +1,33 @@
+id: com.swapalert.app
+runtime: org.kde.Platform
+runtime-version: '6.11'
+sdk: org.kde.Sdk
+command: swap-alert
+
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.freedesktop.StatusNotifierWatcher
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --own-name=org.kde.StatusNotifierItem-*
+  - --system-talk-name=org.freedesktop.login1
+  - --filesystem=xdg-config/autostart:create
+
+modules:
+  - name: swap-alert
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_TESTING=ON
+    test-commands:
+      - QT_QPA_PLATFORM=offscreen ctest --output-on-failure
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .git
+          - build
+          - build-*
+          - dist

@@ -219,6 +219,8 @@ swap-alert/
 
 ### Milestone 1 — Monitoring core
 
+**Status: complete for macOS and Linux.**
+
 - Create the CMake and Qt project skeleton.
 - Define platform service interfaces.
 - Implement macOS and Linux swap readers.
@@ -227,7 +229,7 @@ swap-alert/
 
 ### Milestone 2 — Alert engine
 
-**Status: complete for macOS.**
+**Status: complete for macOS and Linux (shared core).**
 
 - Implement three-tier threshold transitions.
 - Add hysteresis, cooldown, snooze, and reset behavior.
@@ -235,7 +237,7 @@ swap-alert/
 
 ### Milestone 3 — Tray application
 
-**Status: complete for macOS.**
+**Status: implemented for macOS and Linux. Linux desktop validation remains.**
 
 - Add tray icon and status menu.
 - Add settings UI and live swap display.
@@ -243,7 +245,7 @@ swap-alert/
 
 ### Milestone 4 — Alerts
 
-**Status: complete for macOS.**
+**Status: complete for macOS; implemented for Linux pending GNOME/KDE validation.**
 
 - Add native platform notifications.
 - Add the Tier 2 warning window.
@@ -252,7 +254,7 @@ swap-alert/
 
 ### Milestone 5 — Guided cleanup
 
-**Status: complete for macOS.**
+**Status: complete for macOS; implemented for Linux pending GNOME/KDE validation.**
 
 - Enumerate eligible user applications and process groups.
 - Estimate and display memory consumption.
@@ -262,7 +264,7 @@ swap-alert/
 
 ### Milestone 6 — System integration
 
-**Status: complete for macOS. Linux integration remains planned.**
+**Status: complete for macOS; implemented for Linux pending desktop and suspend/resume validation.**
 
 - Add start-at-login support on both platforms.
 - Handle sleep, wake, login, and desktop restarts.
@@ -270,7 +272,7 @@ swap-alert/
 
 ### Milestone 7 — Packaging and release
 
-**Status: macOS packaging pipeline complete. Developer ID signing and notarization are credential-gated release steps; Linux packaging remains planned.**
+**Status: macOS packaging is implemented, the AppImage pipeline is verified end to end, and the Flatpak pipeline is implemented. macOS signing/notarization, an exact Flatpak bundle build, and Linux cross-desktop artifact validation remain release-environment steps.**
 
 - Sign, notarize, and package the macOS application as a DMG.
 - Package Linux as an AppImage for a portable standalone download.
