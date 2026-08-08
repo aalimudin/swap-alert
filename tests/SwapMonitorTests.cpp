@@ -41,6 +41,7 @@ private slots:
     void readFailureDoesNotEvaluateSample();
     void pauseAndResumeResetTheAlertEpisode();
     void batchedSettingsUpdateEmitsOnce();
+    void systemSuspendStopsSamplingAndResumeRefreshes();
 
 private:
     std::unique_ptr<SettingsStore> makeSettings();
@@ -192,6 +193,25 @@ void SwapMonitorTests::batchedSettingsUpdateEmitsOnce()
     QCOMPARE(settings.pollingSeconds(), 25);
     QCOMPARE(settings.cooldownMinutes(), 40);
     QVERIFY(!settings.monitoringEnabled());
+}
+
+void SwapMonitorTests::systemSuspendStopsSamplingAndResumeRefreshes()
+{
+    auto settings = makeSettings();
+    auto reader = std::make_unique<FakeSwapReader>();
+    auto clock = std::make_unique<FakeClock>();
+    SwapMonitor monitor(std::move(reader), *settings, std::move(clock));
+    QSignalSpy sampleSpy(&monitor, &SwapMonitor::sampleUpdated);
+
+    monitor.start();
+    QCOMPARE(sampleSpy.count(), 1);
+
+    monitor.suspendForSystemEvent();
+    monitor.refreshNow();
+    QCOMPARE(sampleSpy.count(), 1);
+
+    monitor.resumeAfterSystemEvent();
+    QCOMPARE(sampleSpy.count(), 2);
 }
 
 QTEST_GUILESS_MAIN(SwapMonitorTests)

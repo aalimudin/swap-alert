@@ -1,0 +1,11 @@
+#pragma once
+
+#include <QLoggingCategory>
+
+Q_DECLARE_LOGGING_CATEGORY(logApp)
+Q_DECLARE_LOGGING_CATEGORY(logMonitor)
+Q_DECLARE_LOGGING_CATEGORY(logAlerts)
+Q_DECLARE_LOGGING_CATEGORY(logNotifications)
+Q_DECLARE_LOGGING_CATEGORY(logProcesses)
+Q_DECLARE_LOGGING_CATEGORY(logSystem)
+

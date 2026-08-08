@@ -142,7 +142,8 @@ The shared core must contain no operating-system-specific code. CMake selects th
 - Manage launch at login with an XDG autostart `.desktop` entry.
 - Use `SIGTERM` for normal termination and confirmed `SIGKILL` as the last resort.
 - Never request root access to terminate processes.
-- Distribute as an AppImage first, followed by a `.deb` package.
+- Publish AppImage and Flatpak packages as the primary cross-distribution formats.
+- Optionally provide native `.rpm` and `.deb` packages for tighter Fedora/RHEL and Debian/Ubuntu integration; neither native format blocks the general Linux release.
 
 Only current-user processes may be offered for termination. System services, protected processes, and Swap Alert itself must be excluded.
 
@@ -242,12 +243,16 @@ swap-alert/
 
 ### Milestone 4 — Alerts
 
+**Status: complete for macOS.**
+
 - Add native platform notifications.
 - Add the Tier 2 warning window.
 - Handle denied permissions and unavailable notification services.
 - Add controls for testing each alert type.
 
 ### Milestone 5 — Guided cleanup
+
+**Status: complete for macOS.**
 
 - Enumerate eligible user applications and process groups.
 - Estimate and display memory consumption.
@@ -257,15 +262,21 @@ swap-alert/
 
 ### Milestone 6 — System integration
 
+**Status: complete for macOS. Linux integration remains planned.**
+
 - Add start-at-login support on both platforms.
 - Handle sleep, wake, login, and desktop restarts.
 - Add structured diagnostic logging.
 
 ### Milestone 7 — Packaging and release
 
+**Status: macOS packaging pipeline complete. Developer ID signing and notarization are credential-gated release steps; Linux packaging remains planned.**
+
 - Sign, notarize, and package the macOS application as a DMG.
-- Package the Linux application as an AppImage.
-- Add `.deb` packaging after the AppImage is stable.
+- Package Linux as an AppImage for a portable standalone download.
+- Package Linux as a Flatpak for a managed, sandboxed installation across distributions.
+- Add `.rpm` and `.deb` convenience packages after the cross-distribution artifacts are stable.
+- Verify installation and desktop integration on both Fedora and Ubuntu.
 - Document installation, permissions, configuration, and troubleshooting.
 
 ## Testing strategy
@@ -273,7 +284,7 @@ swap-alert/
 - Unit-test the alert state machine independently of the OS.
 - Inject fake swap readers and clocks for deterministic threshold, cooldown, and snooze tests.
 - Test native adapters separately on macOS and Linux.
-- Run CI builds and tests on macOS and Ubuntu.
+- Run CI builds and tests on macOS, Ubuntu, and Fedora.
 - Manually test GNOME and KDE notification and tray behavior.
 - Test sleep/wake, login startup, notification denial, desktop restart, and rapid threshold changes.
 - Test applications that refuse to quit and applications with unsaved work.
@@ -303,7 +314,7 @@ swap-alert/
 - Long-term historical charts
 - Predictive or rate-based alert thresholds
 - Percentage-based thresholds
-- Flatpak packaging
+- Distribution-specific package repositories
 
 ## Local development prerequisites
 
@@ -328,6 +339,19 @@ sudo apt install \
   qt6-base-dev-tools \
   qt6-tools-dev \
   libdbus-1-dev
+```
+
+On Fedora:
+
+```bash
+sudo dnf install \
+  gcc-c++ \
+  cmake \
+  ninja-build \
+  pkgconf-pkg-config \
+  qt6-qtbase-devel \
+  qt6-qttools-devel \
+  dbus-devel
 ```
 
 Linux-specific behavior should be built and tested on Linux or in CI rather than cross-compiled from macOS.

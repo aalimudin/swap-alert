@@ -92,6 +92,7 @@ TrayController::TrayController(SettingsStore& settings, QObject* parent)
     m_monitoringAction->setChecked(m_settings.monitoringEnabled());
     m_menu->addSeparator();
     auto* settingsAction = m_menu->addAction(QStringLiteral("Settings…"));
+    auto* logsAction = m_menu->addAction(QStringLiteral("Open Logs Folder…"));
     auto* quitAction = m_menu->addAction(QStringLiteral("Quit Swap Alert"));
 
     m_trayIcon->setContextMenu(m_menu);
@@ -106,6 +107,7 @@ TrayController::TrayController(SettingsStore& settings, QObject* parent)
     connect(snoozeUntilLogin, &QAction::triggered, this,
         &TrayController::snoozeUntilRestartRequested);
     connect(settingsAction, &QAction::triggered, this, &TrayController::settingsRequested);
+    connect(logsAction, &QAction::triggered, this, &TrayController::logsRequested);
     connect(quitAction, &QAction::triggered, this, &TrayController::quitRequested);
     connect(m_monitoringAction, &QAction::toggled, this, &TrayController::monitoringToggled);
     connect(&m_settings, &SettingsStore::changed, this, [this] {
@@ -129,6 +131,13 @@ TrayController::~TrayController()
 void TrayController::show()
 {
     m_trayIcon->show();
+}
+
+void TrayController::ensureVisible()
+{
+    if (!m_trayIcon->isVisible()) {
+        m_trayIcon->show();
+    }
 }
 
 void TrayController::updateSample(const SwapInfo& info, AlertTier tier)

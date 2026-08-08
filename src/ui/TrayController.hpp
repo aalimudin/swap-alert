@@ -17,12 +17,14 @@ public:
     explicit TrayController(SettingsStore& settings, QObject* parent = nullptr);
     ~TrayController() override;
     void show();
+    void ensureVisible();
     void updateSample(const SwapInfo& info, AlertTier tier);
     void showReadError(const QString& message);
 
 signals:
     void dashboardRequested();
     void settingsRequested();
+    void logsRequested();
     void reviewRequested();
     void refreshRequested();
     void snoozeRequested(int minutes);

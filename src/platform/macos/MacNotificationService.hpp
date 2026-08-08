@@ -4,7 +4,9 @@
 
 class MacNotificationService final : public INotificationService {
 public:
-    void requestAuthorization() override;
-    void send(const QString& title, const QString& body, AlertTier tier) override;
+    void authorizationStatus(NotificationCallback callback) override;
+    void requestAuthorization(NotificationCallback callback) override;
+    void send(const QString& title, const QString& body, AlertTier tier,
+        NotificationCallback callback) override;
+    bool openNotificationSettings(QString& errorMessage) override;
 };
-
