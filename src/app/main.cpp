@@ -2,12 +2,23 @@
 #include "core/Logging.hpp"
 #include "core/SettingsStore.hpp"
 #include "core/SwapMonitor.hpp"
+#if defined(Q_OS_MACOS)
 #include "platform/macos/MacAutostartService.hpp"
 #include "platform/macos/MacContinuousClock.hpp"
 #include "platform/macos/MacNotificationService.hpp"
 #include "platform/macos/MacProcessService.hpp"
 #include "platform/macos/MacSwapReader.hpp"
 #include "platform/macos/MacSystemEventMonitor.hpp"
+#elif defined(Q_OS_LINUX)
+#include "platform/linux/LinuxAutostartService.hpp"
+#include "platform/linux/LinuxBootClock.hpp"
+#include "platform/linux/LinuxNotificationService.hpp"
+#include "platform/linux/LinuxProcessService.hpp"
+#include "platform/linux/LinuxSwapReader.hpp"
+#include "platform/linux/LinuxSystemEventMonitor.hpp"
+#else
+#error "Swap Alert does not support this platform"
+#endif
 #include "ui/CleanupDialog.hpp"
 #include "ui/Format.hpp"
 #include "ui/SettingsDialog.hpp"
@@ -22,9 +33,26 @@
 #include <QMessageBox>
 #include <QSystemTrayIcon>
 #include <QUrl>
+#include <cstdio>
 #include <memory>
 
 namespace {
+#if defined(Q_OS_MACOS)
+using PlatformAutostartService = MacAutostartService;
+using PlatformClock = MacContinuousClock;
+using PlatformNotificationService = MacNotificationService;
+using PlatformProcessService = MacProcessService;
+using PlatformSwapReader = MacSwapReader;
+using PlatformSystemEventMonitor = MacSystemEventMonitor;
+#elif defined(Q_OS_LINUX)
+using PlatformAutostartService = LinuxAutostartService;
+using PlatformClock = LinuxBootClock;
+using PlatformNotificationService = LinuxNotificationService;
+using PlatformProcessService = LinuxProcessService;
+using PlatformSwapReader = LinuxSwapReader;
+using PlatformSystemEventMonitor = LinuxSystemEventMonitor;
+#endif
+
 QString notificationTitle(AlertTier tier)
 {
     switch (tier) {
@@ -62,10 +90,17 @@ QString systemEventName(SystemEvent event)
 
 int main(int argc, char* argv[])
 {
+    for (int index = 1; index < argc; ++index) {
+        if (QString::fromLocal8Bit(argv[index]) == QStringLiteral("--version")) {
+            std::printf("Swap Alert %s\n", SWAP_ALERT_VERSION);
+            return 0;
+        }
+    }
+
     QApplication application(argc, argv);
     QApplication::setApplicationName(QStringLiteral("Swap Alert"));
     QApplication::setOrganizationName(QStringLiteral("SwapAlert"));
-    QApplication::setApplicationVersion(QStringLiteral("0.1.0"));
+    QApplication::setApplicationVersion(QStringLiteral(SWAP_ALERT_VERSION));
     QApplication::setQuitOnLastWindowClosed(false);
 
     if (!DiagnosticLogger::install()) {
@@ -75,17 +110,18 @@ int main(int argc, char* argv[])
 
     if (!QSystemTrayIcon::isSystemTrayAvailable()) {
         QMessageBox::critical(nullptr, QStringLiteral("Swap Alert"),
-            QStringLiteral("The macOS menu bar is unavailable."));
+            QStringLiteral("No system tray is available. Enable a tray or status-notifier "
+                           "extension, then start Swap Alert again."));
         return 1;
     }
 
     SettingsStore settings;
-    MacAutostartService autostartService;
-    MacNotificationService notificationService;
-    MacProcessService processService;
-    MacSystemEventMonitor systemEventMonitor;
-    SwapMonitor monitor(std::make_unique<MacSwapReader>(), settings,
-        std::make_unique<MacContinuousClock>());
+    PlatformAutostartService autostartService;
+    PlatformNotificationService notificationService;
+    PlatformProcessService processService;
+    PlatformSystemEventMonitor systemEventMonitor;
+    SwapMonitor monitor(std::make_unique<PlatformSwapReader>(), settings,
+        std::make_unique<PlatformClock>());
     TrayController tray(settings);
     SettingsDialog settingsDialog(settings, autostartService, notificationService);
     StatusDialog statusDialog(settings);
@@ -112,12 +148,18 @@ int main(int argc, char* argv[])
     const auto presentAlert = [&](AlertTier tier, const SwapInfo& info, const QString& body) {
         notificationService.send(notificationTitle(tier), body, tier,
             [&, tier, info](const NotificationResult& result) {
+#if defined(Q_OS_LINUX)
+                if (!result.success) {
+                    tray.showNotification(notificationTitle(tier), body, tier);
+                }
+#else
                 if (!result.success && (tier == AlertTier::Tier1 || tier == AlertTier::Tier2)) {
                     warningDialog.showWarning(tier, info,
                         result.message.isEmpty()
                             ? QStringLiteral("The macOS notification could not be delivered.")
                             : result.message);
                 }
+#endif
             });
 
         if (tier == AlertTier::Tier2) {

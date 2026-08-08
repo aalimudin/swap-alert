@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Swap Alert
+Comment=Monitor system swap usage and receive escalating alerts
+Exec=swap-alert
+Icon=com.swapalert.app
+Terminal=false
+Categories=Utility;
+Keywords=swap;memory;monitor;
+StartupNotify=false

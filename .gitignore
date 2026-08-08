@@ -71,4 +71,5 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+.flatpak-builder/
 dist/

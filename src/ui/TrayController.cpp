@@ -158,6 +158,13 @@ void TrayController::showReadError(const QString& message)
     m_trayIcon->setIcon(unavailableIcon());
 }
 
+void TrayController::showNotification(const QString& title, const QString& message, AlertTier tier)
+{
+    const auto icon = tier == AlertTier::Tier3 ? QSystemTrayIcon::Critical
+                                               : QSystemTrayIcon::Warning;
+    m_trayIcon->showMessage(title, message, icon, tier == AlertTier::Tier1 ? 10'000 : 0);
+}
+
 void TrayController::rebuildIcon(AlertTier tier)
 {
     m_trayIcon->setIcon(statusIcon(tier));

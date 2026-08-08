@@ -1,6 +1,12 @@
 #include "core/AlertEngine.hpp"
+#if defined(Q_OS_MACOS)
 #include "platform/macos/MacSwapReader.hpp"
+#elif defined(Q_OS_LINUX)
+#include "platform/linux/LinuxSwapReader.hpp"
+#endif
 
+#include <QFile>
+#include <QTemporaryDir>
 #include <QtTest>
 
 class AlertEngineTests final : public QObject {
@@ -15,7 +21,11 @@ private slots:
     void descendingMultipleTiersUsesEachResetPoint();
     void cooldownPreventsImmediateRetrigger();
     void resetRearmsEveryTierAndClearsCooldown();
-    void macSwapReaderReturnsCoherentValues();
+    void platformSwapReaderReturnsCoherentValues();
+#if defined(Q_OS_LINUX)
+    void linuxSwapReaderParsesMeminfo();
+    void linuxSwapReaderRejectsInvalidMeminfo();
+#endif
 };
 
 namespace {
@@ -105,18 +115,63 @@ void AlertEngineTests::resetRearmsEveryTierAndClearsCooldown()
     QCOMPARE(engine.evaluate(350, 1).triggeredTier, std::optional(AlertTier::Tier3));
 }
 
-void AlertEngineTests::macSwapReaderReturnsCoherentValues()
+void AlertEngineTests::platformSwapReaderReturnsCoherentValues()
 {
+#if defined(Q_OS_MACOS)
     MacSwapReader reader;
+#elif defined(Q_OS_LINUX)
+    LinuxSwapReader reader;
+#endif
     QString error;
     const auto info = reader.read(error);
+#if defined(Q_OS_MACOS)
     if (!info && error.contains(QStringLiteral("Operation not permitted"))) {
         QSKIP("The test runner sandbox does not permit reading vm.swapusage.");
     }
+#endif
     QVERIFY2(info.has_value(), qPrintable(error));
     QCOMPARE(info->usedBytes + info->freeBytes, info->totalBytes);
     QVERIFY(info->usedBytes <= info->totalBytes);
 }
+
+#if defined(Q_OS_LINUX)
+void AlertEngineTests::linuxSwapReaderParsesMeminfo()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path = directory.filePath(QStringLiteral("meminfo"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    const QByteArray contents("MemTotal: 999 kB\nSwapTotal: 4096 kB\nSwapFree: 1024 kB\n");
+    QCOMPARE(file.write(contents), contents.size());
+    file.close();
+
+    LinuxSwapReader reader(path);
+    QString error;
+    const auto info = reader.read(error);
+    QVERIFY2(info.has_value(), qPrintable(error));
+    QCOMPARE(info->totalBytes, 4096ULL * 1024);
+    QCOMPARE(info->freeBytes, 1024ULL * 1024);
+    QCOMPARE(info->usedBytes, 3072ULL * 1024);
+}
+
+void AlertEngineTests::linuxSwapReaderRejectsInvalidMeminfo()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path = directory.filePath(QStringLiteral("meminfo"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    const QByteArray contents("SwapTotal: 100 kB\nSwapFree: 101 kB\n");
+    QCOMPARE(file.write(contents), contents.size());
+    file.close();
+
+    LinuxSwapReader reader(path);
+    QString error;
+    QVERIFY(!reader.read(error).has_value());
+    QVERIFY2(error.contains(QStringLiteral("SwapFree")), qPrintable(error));
+}
+#endif
 
 QTEST_APPLESS_MAIN(AlertEngineTests)
 
