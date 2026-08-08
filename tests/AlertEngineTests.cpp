@@ -11,7 +11,10 @@ private slots:
     void triggersEachTierOnce();
     void directJumpTriggersHighestTier();
     void hysteresisRearmsTier();
+    void hysteresisKeepsDisplayedTierStable();
+    void descendingMultipleTiersUsesEachResetPoint();
     void cooldownPreventsImmediateRetrigger();
+    void resetRearmsEveryTierAndClearsCooldown();
     void macSwapReaderReturnsCoherentValues();
 };
 
@@ -64,6 +67,25 @@ void AlertEngineTests::hysteresisRearmsTier()
     QCOMPARE(engine.evaluate(100, 40).triggeredTier, std::optional(AlertTier::Tier1));
 }
 
+void AlertEngineTests::hysteresisKeepsDisplayedTierStable()
+{
+    auto engine = makeEngine(0);
+    QCOMPARE(engine.evaluate(100, 0).currentTier, AlertTier::Tier1);
+    QCOMPARE(engine.evaluate(99, 10).currentTier, AlertTier::Tier1);
+    QCOMPARE(engine.evaluate(90, 20).currentTier, AlertTier::Tier1);
+    QCOMPARE(engine.evaluate(89, 30).currentTier, AlertTier::Normal);
+}
+
+void AlertEngineTests::descendingMultipleTiersUsesEachResetPoint()
+{
+    auto engine = makeEngine(0);
+    QCOMPARE(engine.evaluate(300, 0).currentTier, AlertTier::Tier3);
+    QCOMPARE(engine.evaluate(280, 10).currentTier, AlertTier::Tier3);
+    QCOMPARE(engine.evaluate(269, 20).currentTier, AlertTier::Tier2);
+    QCOMPARE(engine.evaluate(179, 30).currentTier, AlertTier::Tier1);
+    QCOMPARE(engine.evaluate(89, 40).currentTier, AlertTier::Normal);
+}
+
 void AlertEngineTests::cooldownPreventsImmediateRetrigger()
 {
     auto engine = makeEngine(1000);
@@ -72,6 +94,15 @@ void AlertEngineTests::cooldownPreventsImmediateRetrigger()
     QVERIFY(!engine.evaluate(100, 500).triggeredTier.has_value());
     engine.evaluate(80, 1100);
     QVERIFY(engine.evaluate(100, 1200).triggeredTier.has_value());
+}
+
+void AlertEngineTests::resetRearmsEveryTierAndClearsCooldown()
+{
+    auto engine = makeEngine(60'000);
+    QCOMPARE(engine.evaluate(350, 0).triggeredTier, std::optional(AlertTier::Tier3));
+    engine.reset();
+    QCOMPARE(engine.currentTier(), AlertTier::Normal);
+    QCOMPARE(engine.evaluate(350, 1).triggeredTier, std::optional(AlertTier::Tier3));
 }
 
 void AlertEngineTests::macSwapReaderReturnsCoherentValues()

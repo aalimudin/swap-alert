@@ -226,11 +226,15 @@ swap-alert/
 
 ### Milestone 2 — Alert engine
 
+**Status: complete for macOS.**
+
 - Implement three-tier threshold transitions.
 - Add hysteresis, cooldown, snooze, and reset behavior.
 - Add unit tests for transitions and edge cases.
 
 ### Milestone 3 — Tray application
+
+**Status: complete for macOS.**
 
 - Add tray icon and status menu.
 - Add settings UI and live swap display.

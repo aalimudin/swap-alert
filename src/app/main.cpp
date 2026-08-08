@@ -1,12 +1,14 @@
 #include "core/SettingsStore.hpp"
 #include "core/SwapMonitor.hpp"
 #include "platform/macos/MacAutostartService.hpp"
+#include "platform/macos/MacContinuousClock.hpp"
 #include "platform/macos/MacNotificationService.hpp"
 #include "platform/macos/MacProcessService.hpp"
 #include "platform/macos/MacSwapReader.hpp"
 #include "ui/CleanupDialog.hpp"
 #include "ui/Format.hpp"
 #include "ui/SettingsDialog.hpp"
+#include "ui/StatusDialog.hpp"
 #include "ui/TrayController.hpp"
 #include "ui/WarningDialog.hpp"
 
@@ -50,26 +52,41 @@ int main(int argc, char* argv[])
     MacAutostartService autostartService;
     MacNotificationService notificationService;
     MacProcessService processService;
-    SwapMonitor monitor(std::make_unique<MacSwapReader>(), settings);
+    SwapMonitor monitor(std::make_unique<MacSwapReader>(), settings,
+        std::make_unique<MacContinuousClock>());
     TrayController tray(settings);
     SettingsDialog settingsDialog(settings, autostartService);
+    StatusDialog statusDialog(settings);
     WarningDialog warningDialog;
     CleanupDialog cleanupDialog(processService);
 
-    QObject::connect(&tray, &TrayController::settingsRequested, &settingsDialog, [&] {
+    const auto showSettings = [&] {
         settingsDialog.reload();
         settingsDialog.show();
         settingsDialog.raise();
         settingsDialog.activateWindow();
-    });
-    QObject::connect(&tray, &TrayController::reviewRequested, &cleanupDialog, [&] {
+    };
+    const auto showDashboard = [&] {
+        statusDialog.show();
+        statusDialog.raise();
+        statusDialog.activateWindow();
+    };
+    const auto showCleanup = [&] {
         cleanupDialog.refresh();
         cleanupDialog.show();
         cleanupDialog.raise();
         cleanupDialog.activateWindow();
-    });
+    };
+
+    QObject::connect(&tray, &TrayController::dashboardRequested, &statusDialog, showDashboard);
+    QObject::connect(&tray, &TrayController::settingsRequested, &settingsDialog, showSettings);
+    QObject::connect(&tray, &TrayController::reviewRequested, &cleanupDialog, showCleanup);
+    QObject::connect(&tray, &TrayController::refreshRequested, &monitor,
+        &SwapMonitor::refreshNow);
     QObject::connect(&tray, &TrayController::snoozeRequested, &monitor,
         &SwapMonitor::snoozeForMinutes);
+    QObject::connect(&tray, &TrayController::snoozeUntilRestartRequested, &monitor,
+        &SwapMonitor::snoozeUntilRestart);
     QObject::connect(&tray, &TrayController::monitoringToggled, &settings,
         &SettingsStore::setMonitoringEnabled);
     QObject::connect(&tray, &TrayController::quitRequested, &application,
@@ -77,8 +94,12 @@ int main(int argc, char* argv[])
 
     QObject::connect(&monitor, &SwapMonitor::sampleUpdated, &tray,
         &TrayController::updateSample);
+    QObject::connect(&monitor, &SwapMonitor::sampleUpdated, &statusDialog,
+        &StatusDialog::updateSample);
     QObject::connect(&monitor, &SwapMonitor::readFailed, &tray,
         &TrayController::showReadError);
+    QObject::connect(&monitor, &SwapMonitor::readFailed, &statusDialog,
+        &StatusDialog::showReadError);
     QObject::connect(&monitor, &SwapMonitor::alertTriggered, &application,
         [&](AlertTier tier, const SwapInfo& info) {
             const QString body = QStringLiteral("Swap usage has reached %1 of %2.")
@@ -95,14 +116,17 @@ int main(int argc, char* argv[])
             }
         });
 
-    QObject::connect(&warningDialog, &WarningDialog::reviewRequested, &cleanupDialog, [&] {
-        cleanupDialog.refresh();
-        cleanupDialog.show();
-        cleanupDialog.raise();
-        cleanupDialog.activateWindow();
-    });
+    QObject::connect(&warningDialog, &WarningDialog::reviewRequested, &cleanupDialog,
+        showCleanup);
     QObject::connect(&warningDialog, &WarningDialog::snoozeRequested, &monitor,
         &SwapMonitor::snoozeForMinutes);
+
+    QObject::connect(&statusDialog, &StatusDialog::refreshRequested, &monitor,
+        &SwapMonitor::refreshNow);
+    QObject::connect(&statusDialog, &StatusDialog::settingsRequested, &settingsDialog,
+        showSettings);
+    QObject::connect(&statusDialog, &StatusDialog::reviewRequested, &cleanupDialog,
+        showCleanup);
 
     QObject::connect(&settingsDialog, &SettingsDialog::testAlertRequested, &application,
         [&](int requestedTier) {
@@ -127,4 +151,3 @@ int main(int argc, char* argv[])
     monitor.start();
     return application.exec();
 }
-

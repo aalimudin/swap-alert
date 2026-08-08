@@ -10,9 +10,12 @@ The macOS MVP currently includes:
 - A prominent Tier 2 warning window
 - A Tier 3 application-review and cleanup window
 - Normal quit and explicitly confirmed force quit
-- Cooldown, hysteresis, and alert snoozing
+- Cooldown, stable tier hysteresis, and alert snoozing
+- Sleep-aware timing through macOS continuous monotonic time
 - Start-at-login support on macOS 13+
 - A colored menu-bar status indicator
+- Live dashboard with current tier, swap utilization, thresholds, and manual refresh
+- Explicit paused and unavailable states in both the tray and dashboard
 
 Linux support is planned but not implemented yet. See [PLAN.md](PLAN.md) for the full roadmap.
 
@@ -63,7 +66,7 @@ Swap Alert runs as a menu-bar-only application, so it does not show an icon in t
 ctest --test-dir build --output-on-failure
 ```
 
-The tests cover tier transitions, direct escalation, hysteresis, cooldown behavior, and a live macOS swap reading.
+The tests cover tier transitions, direct escalation, stable hysteresis, cooldown behavior, snooze expiration, pause/resume behavior, read failures, and a live macOS swap reading.
 
 ## Current development limitations
 

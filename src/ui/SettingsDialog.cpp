@@ -107,13 +107,11 @@ void SettingsDialog::save()
         return;
     }
 
-    m_settings.setThresholds(
+    m_settings.setConfiguration(
         static_cast<quint64>(m_tier1->value() * gibibyte),
         static_cast<quint64>(m_tier2->value() * gibibyte),
-        static_cast<quint64>(m_tier3->value() * gibibyte));
-    m_settings.setPollingSeconds(m_polling->value());
-    m_settings.setCooldownMinutes(m_cooldown->value());
-    m_settings.setMonitoringEnabled(m_monitoring->isChecked());
+        static_cast<quint64>(m_tier3->value() * gibibyte),
+        m_polling->value(), m_cooldown->value(), m_monitoring->isChecked());
 
     if (m_startAtLogin->isChecked() != m_autostartService.isEnabled()) {
         QString error;
@@ -128,7 +126,11 @@ void SettingsDialog::save()
 
 void SettingsDialog::restoreDefaults()
 {
-    m_settings.restoreDefaults();
-    reload();
+    m_tier1->setValue(2.0);
+    m_tier2->setValue(4.0);
+    m_tier3->setValue(8.0);
+    m_polling->setValue(10);
+    m_cooldown->setValue(15);
+    m_monitoring->setChecked(true);
+    m_startAtLogin->setChecked(false);
 }
-

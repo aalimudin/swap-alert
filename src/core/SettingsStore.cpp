@@ -71,6 +71,19 @@ void SettingsStore::setMonitoringEnabled(bool enabled)
     emit changed();
 }
 
+void SettingsStore::setConfiguration(quint64 tier1, quint64 tier2, quint64 tier3,
+    int pollingSeconds, int cooldownMinutes, bool monitoringEnabled)
+{
+    m_settings.setValue("thresholds/tier1Bytes", tier1);
+    m_settings.setValue("thresholds/tier2Bytes", tier2);
+    m_settings.setValue("thresholds/tier3Bytes", tier3);
+    m_settings.setValue("monitoring/pollingSeconds", pollingSeconds);
+    m_settings.setValue("alerts/cooldownMinutes", cooldownMinutes);
+    m_settings.setValue("monitoring/enabled", monitoringEnabled);
+    m_settings.sync();
+    emit changed();
+}
+
 void SettingsStore::restoreDefaults()
 {
     m_settings.clear();
@@ -85,4 +98,3 @@ AlertEngine::Configuration SettingsStore::alertConfiguration() const
         resetMargin(),
     };
 }
-

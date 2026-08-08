@@ -29,6 +29,7 @@ swap-alert/
 │   ├── core/
 │   │   ├── AlertEngine.*
 │   │   ├── AlertTier.hpp
+│   │   ├── IMonotonicClock.hpp
 │   │   ├── ISwapReader.hpp
 │   │   ├── SettingsStore.*
 │   │   ├── SwapInfo.hpp
@@ -39,6 +40,7 @@ swap-alert/
 │   │   ├── IProcessService.hpp
 │   │   └── macos/
 │   │       ├── MacAutostartService.*
+│   │       ├── MacContinuousClock.*
 │   │       ├── MacNotificationService.*
 │   │       ├── MacProcessService.*
 │   │       └── MacSwapReader.*
@@ -46,10 +48,12 @@ swap-alert/
 │       ├── CleanupDialog.*
 │       ├── Format.hpp
 │       ├── SettingsDialog.*
+│       ├── StatusDialog.*
 │       ├── TrayController.*
 │       └── WarningDialog.*
 └── tests/
-    └── AlertEngineTests.cpp
+    ├── AlertEngineTests.cpp
+    └── SwapMonitorTests.cpp
 ```
 
 The folders have distinct responsibilities:
@@ -154,7 +158,8 @@ SettingsStore settings;
 MacAutostartService autostartService;
 MacNotificationService notificationService;
 MacProcessService processService;
-SwapMonitor monitor(std::make_unique<MacSwapReader>(), settings);
+SwapMonitor monitor(std::make_unique<MacSwapReader>(), settings,
+    std::make_unique<MacContinuousClock>());
 TrayController tray(settings);
 SettingsDialog settingsDialog(settings, autostartService);
 WarningDialog warningDialog;
@@ -269,7 +274,7 @@ Each refresh follows these steps:
 
 ```cpp
 const auto evaluation =
-    m_alertEngine.evaluate(info->usedBytes, m_clock.elapsed());
+    m_alertEngine.evaluate(info->usedBytes, m_clock->nowMs());
 
 emit sampleUpdated(*info, evaluation.currentTier);
 
@@ -355,6 +360,8 @@ resetPoint = threshold * (1.0 - resetMargin);
 
 The default reset margin is 15%. A 4 GB tier therefore rearms only after usage falls below approximately 3.4 GB.
 
+Hysteresis also stabilizes the displayed tier. If Tier 2 was reached, usage falling from 4.0 GB to 3.9 GB does not immediately turn the menu-bar indicator green. The current tier remains Tier 2 until usage crosses its reset point. This keeps the visible state consistent with the alert state.
+
 ### Cooldown
 
 Even if a tier has been rearmed, the configured cooldown must have elapsed:
@@ -367,7 +374,9 @@ The default cooldown is 15 minutes.
 
 ### Why use monotonic time?
 
-`QElapsedTimer` is used instead of the wall clock. Changing the system clock or moving between time zones therefore does not break cooldown calculations.
+The core depends on `IMonotonicClock` instead of directly reading a clock. On macOS, `MacContinuousClock` uses `mach_continuous_time`, which is monotonic and advances while the computer sleeps. Changing the wall clock or moving between time zones therefore does not break cooldown calculations, and sleeping does not artificially extend a snooze.
+
+Tests inject a fake clock so they can advance time instantly and deterministically.
 
 ## 8. Snoozing and pausing
 
@@ -377,10 +386,12 @@ The monitor records the end of the snooze using elapsed time:
 
 ```cpp
 m_snoozedUntilMs =
-    m_clock.elapsed() + static_cast<qint64>(minutes) * 60 * 1000;
+    m_clock->nowMs() + static_cast<qint64>(minutes) * 60 * 1000;
 ```
 
 When snooze expires, the alert engine is reset so it can remind the user if swap remains above a threshold.
+
+The tray also offers an Until Next Login option. This keeps alerts snoozed for the lifetime of the current Swap Alert process; the normal launch-at-login lifecycle clears it at the next login.
 
 ## 9. Menu-bar interface
 
@@ -389,6 +400,9 @@ When snooze expires, the alert engine is reset so it can remind the user if swap
 The menu provides:
 
 - Current swap usage
+- Current alert tier
+- Open Dashboard
+- Refresh Now
 - Review Applications
 - Snooze for 15 minutes or one hour
 - Monitoring toggle
@@ -412,7 +426,22 @@ const QString status = QStringLiteral("Swap: %1 of %2")
 
 [`packaging/macos/Info.plist.in`](../packaging/macos/Info.plist.in) sets `LSUIElement` to `true`. That makes Swap Alert a menu-bar utility without a normal Dock icon.
 
-## 10. Persistent settings
+When monitoring is paused, or a swap read fails, the tray changes to a gray icon and replaces stale status text with Paused or Unavailable. Resuming monitoring immediately takes a fresh sample.
+
+## 10. Live dashboard
+
+[`src/ui/StatusDialog.cpp`](../src/ui/StatusDialog.cpp) provides a larger live view without making the tray menu crowded. It shows:
+
+- Current used and total swap
+- A utilization progress bar
+- The hysteresis-stabilized alert tier
+- Monitoring, paused, or unavailable state
+- All three configured thresholds
+- Refresh, application review, and settings actions
+
+The dashboard is constructed at startup and connected to the same `sampleUpdated` and `readFailed` signals as the tray. It therefore stays current even while its window is hidden.
+
+## 11. Persistent settings
 
 [`src/core/SettingsStore.cpp`](../src/core/SettingsStore.cpp) uses `QSettings` to save preferences for the current user.
 
@@ -434,7 +463,7 @@ The stored values include:
 
 When a setting changes, `SettingsStore` emits `changed()`. `SwapMonitor` receives that signal and updates its timer and alert configuration without restarting the application.
 
-## 11. Settings dialog
+## 12. Settings dialog
 
 [`src/ui/SettingsDialog.cpp`](../src/ui/SettingsDialog.cpp) builds a Qt form containing threshold, polling, cooldown, monitoring, and autostart controls.
 
@@ -446,7 +475,9 @@ Tier 1 < Tier 2 < Tier 3
 
 The Test Tier buttons emit simulated alert requests. They exercise notification and dialog presentation without changing real swap usage.
 
-## 12. Native notifications
+Saving uses one batched `setConfiguration()` call, so the monitor receives one coherent update and performs at most one immediate refresh. Restore Defaults only edits the form; it does not persist anything until Save is pressed, so Cancel behaves as expected.
+
+## 13. Native notifications
 
 [`src/platform/macos/MacNotificationService.mm`](../src/platform/macos/MacNotificationService.mm) uses Apple's UserNotifications framework.
 
@@ -467,7 +498,7 @@ UNNotificationRequest* request =
 
 A notification delegate permits banners to appear while Swap Alert is active. Tier 1 is silent; Tier 2 and Tier 3 use the default notification sound.
 
-## 13. Alert presentation
+## 14. Alert presentation
 
 `main.cpp` decides how each triggered tier is presented:
 
@@ -477,7 +508,7 @@ A notification delegate permits banners to appear while Swap Alert is active. Ti
 
 The core `AlertEngine` does not know about any of these windows. It only returns an alert tier. Presentation policy remains in the application layer.
 
-## 14. Listing running applications
+## 15. Listing running applications
 
 [`src/platform/macos/MacProcessService.mm`](../src/platform/macos/MacProcessService.mm) uses `NSWorkspace` to enumerate visible macOS applications.
 
@@ -493,7 +524,7 @@ The list is sorted from highest to lowest memory use.
 
 This is only an estimate for multi-process applications. A browser's helper processes, for example, may not be included in its primary GUI process footprint.
 
-## 15. Safe application cleanup
+## 16. Safe application cleanup
 
 [`src/ui/CleanupDialog.cpp`](../src/ui/CleanupDialog.cpp) presents the application list with checkboxes.
 
@@ -513,7 +544,7 @@ Swap Alert never automatically selects or terminates an application. Force quit 
 
 The app also requires no root privileges and cannot terminate another user's processes through this UI.
 
-## 16. Start at login
+## 17. Start at login
 
 [`src/platform/macos/MacAutostartService.mm`](../src/platform/macos/MacAutostartService.mm) uses `SMAppService.mainAppService`, available on macOS 13 and later.
 
@@ -521,7 +552,7 @@ Enabling the preference registers the application. Disabling it unregisters the 
 
 Start at login should be tested after placing the application in a stable location such as `/Applications`. Registering a temporary build path is not appropriate for a final installation.
 
-## 17. Automated tests
+## 18. Automated tests
 
 [`tests/AlertEngineTests.cpp`](../tests/AlertEngineTests.cpp) uses Qt Test.
 
@@ -534,6 +565,15 @@ The suite covers:
 - Preventing immediate repeats through cooldown
 - Reading coherent swap values from macOS when the test environment permits it
 
+[`tests/SwapMonitorTests.cpp`](../tests/SwapMonitorTests.cpp) injects a fake swap reader and fake clock. It verifies:
+
+- Samples continue while alerts are snoozed
+- A timed snooze reminds the user after it expires
+- Until-next-login snooze does not expire with elapsed time
+- Failed swap reads do not evaluate or emit a sample
+- Pausing and resuming monitoring starts a fresh alert episode
+- Batched settings updates persist all values and emit one change signal
+
 The core tests use small values such as 100, 200, and 300 bytes. The unit itself does not matter to the state machine, which makes the cases easy to read.
 
 The macOS swap test may be skipped inside restricted execution sandboxes that deny access to `vm.swapusage`. Other read errors still fail the test.
@@ -544,7 +584,7 @@ Run the tests with:
 ctest --test-dir build --output-on-failure
 ```
 
-## 18. How Linux support fits later
+## 19. How Linux support fits later
 
 The core alert logic and most Qt UI code do not depend on macOS. Linux support can be added by implementing the same interfaces:
 
@@ -567,7 +607,7 @@ elseif(UNIX)
 endif()
 ```
 
-## 19. Suggested learning exercises
+## 20. Suggested learning exercises
 
 These changes are small enough to attempt while learning the codebase:
 
@@ -575,17 +615,16 @@ These changes are small enough to attempt while learning the codebase:
 2. Add the current alert tier as text next to the swap value.
 3. Make the reset margin configurable in Settings.
 4. Add tests for exact threshold boundaries.
-5. Add a manual Refresh Now tray action.
+5. Add a keyboard shortcut that opens the dashboard.
 6. Record the last 60 readings and display a small history table.
-7. Introduce a fake `ISwapReader` and unit-test `SwapMonitor` signals.
+7. Extend the fake-reader monitor tests to cover live threshold changes.
 8. Combine memory usage for multi-process applications.
 9. Add `LinuxSwapReader` while keeping all existing core tests unchanged.
 
-## 20. Good next architectural improvements
+## 21. Good next architectural improvements
 
 As the project grows, consider:
 
-- A fake clock interface for deterministic monitor and snooze tests
 - Structured logging with `QLoggingCategory` or Apple `OSLog`
 - A notification result/error callback instead of ignoring delivery errors
 - Process grouping for browsers and Electron applications
@@ -594,4 +633,3 @@ As the project grows, consider:
 - Packaging with `macdeployqt`, signing, notarization, and DMG creation
 
 The current design intentionally keeps those concerns out of the first MVP while leaving clear places to add them.
-

@@ -23,6 +23,8 @@ public:
     void setPollingSeconds(int seconds);
     void setCooldownMinutes(int minutes);
     void setMonitoringEnabled(bool enabled);
+    void setConfiguration(quint64 tier1, quint64 tier2, quint64 tier3,
+        int pollingSeconds, int cooldownMinutes, bool monitoringEnabled);
     void restoreDefaults();
 
     [[nodiscard]] AlertEngine::Configuration alertConfiguration() const;
@@ -33,4 +35,3 @@ signals:
 private:
     QSettings m_settings;
 };
-
