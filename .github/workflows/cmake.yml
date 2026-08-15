@@ -27,9 +27,10 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: 6.8.*
-          archives: qtbase
+          version: 6.8.3
+          archives: qtbase icu
           cache: true
+          cache-key-prefix: swap-alert-qt-linux-icu-v1
 
       - name: Configure
         run: >-
@@ -90,9 +91,10 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: 6.8.*
+          version: 6.8.3
           archives: qtbase
           cache: true
+          cache-key-prefix: swap-alert-qt-macos-v1
 
       - name: Configure
         run: >-
