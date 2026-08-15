@@ -131,6 +131,16 @@ With `flatpak-builder` and the Flathub remote configured:
 ./packaging/linux/verify-flatpak.sh dist/Swap-Alert-0.1.0.flatpak
 ```
 
+To create a native package for the current distribution, install `dpkg-dev` and `file` on Debian/Ubuntu or `rpm-build` on Fedora, then run:
+
+```bash
+./packaging/linux/package-native.sh
+./packaging/linux/verify-native-package.sh dist/swap-alert_0.1.0_amd64.deb
+# or: ./packaging/linux/verify-native-package.sh dist/swap-alert-0.1.0-1.x86_64.rpm
+```
+
+Pass `deb`, `rpm`, or `all` to `package-native.sh` to override automatic format detection.
+
 See [docs/RELEASING.md](docs/RELEASING.md) for tool setup, sandbox limitations, and the Linux release checklist.
 
 ## Test

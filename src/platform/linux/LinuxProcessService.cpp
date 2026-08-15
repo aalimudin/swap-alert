@@ -126,8 +126,10 @@ std::optional<LinuxProcess> readProcess(qint64 processId, quint32 requiredUserId
     std::optional<quint32> userId;
     qint64 parentId = 0;
     quint64 memoryBytes = 0;
-    while (!status.atEnd()) {
-        const QByteArray line = status.readLine();
+    // procfs pseudo-files report a size of zero, so QFile::atEnd() may be true
+    // before the first read. Read the snapshot first and then parse its lines.
+    const auto statusLines = status.readAll().split('\n');
+    for (const QByteArray& line : statusLines) {
         if (line.startsWith("Uid:")) {
             const auto fields = line.simplified().split(' ');
             bool valid = false;
@@ -217,14 +219,23 @@ ProcessInventory inventory()
     QDir proc(QStringLiteral("/proc"));
     const auto entries = proc.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
     processes.reserve(entries.size());
+    int numericEntries = 0;
+    int readableUserProcesses = 0;
+    int protectedProcesses = 0;
     for (const QString& entry : entries) {
         bool valid = false;
         const qint64 processId = entry.toLongLong(&valid);
         if (!valid || processId <= 1 || processId == ownProcessId) {
             continue;
         }
+        ++numericEntries;
         auto process = readProcess(processId, currentUserId);
-        if (!process || isProtected(*process)) {
+        if (!process) {
+            continue;
+        }
+        ++readableUserProcesses;
+        if (isProtected(*process)) {
+            ++protectedProcesses;
             continue;
         }
         if (process->desktopIdentifier.isEmpty()) {
@@ -236,6 +247,10 @@ ProcessInventory inventory()
         }
         processes.push_back(std::move(*process));
     }
+    qCInfo(logProcesses) << "Process inventory scanned" << numericEntries
+                         << "numeric procfs entries," << readableUserProcesses
+                         << "current-user executables, and excluded" << protectedProcesses
+                         << "protected processes";
 
     QHash<qint64, QString> identityByProcess;
     for (const auto& process : processes) {

@@ -272,12 +272,12 @@ swap-alert/
 
 ### Milestone 7 — Packaging and release
 
-**Status: macOS packaging is implemented, the AppImage pipeline is verified end to end, and the Flatpak pipeline is implemented. macOS signing/notarization, an exact Flatpak bundle build, and Linux cross-desktop artifact validation remain release-environment steps.**
+**Status: macOS, AppImage, Flatpak, DEB, and RPM packaging pipelines are implemented. AppImage is verified end to end, and native package generation is verified on Fedora 44 and Debian 13. macOS signing/notarization, an exact Flatpak bundle build, native package installation testing, and Linux cross-desktop artifact validation remain release-environment steps.**
 
 - Sign, notarize, and package the macOS application as a DMG.
 - Package Linux as an AppImage for a portable standalone download.
 - Package Linux as a Flatpak for a managed, sandboxed installation across distributions.
-- Add `.rpm` and `.deb` convenience packages after the cross-distribution artifacts are stable.
+- Add `.rpm` and `.deb` convenience packages after the cross-distribution artifacts are stable. *(Implemented with host-native dependency discovery.)*
 - Verify installation and desktop integration on both Fedora and Ubuntu.
 - Document installation, permissions, configuration, and troubleshooting.
 

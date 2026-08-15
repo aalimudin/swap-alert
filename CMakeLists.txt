@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(SwapAlert VERSION 0.1.0 LANGUAGES CXX)
+project(SwapAlert
+    VERSION 0.1.0
+    DESCRIPTION "A lightweight tray utility for monitoring system swap usage"
+    HOMEPAGE_URL "https://github.com/aalimudin/swap-alert"
+    LANGUAGES CXX
+)
 
 if(APPLE)
     enable_language(OBJCXX)
@@ -165,6 +170,18 @@ target_link_libraries(ProcessGroupingTests PRIVATE Qt6::Core Qt6::Test)
 
 add_test(NAME ProcessGroupingTests COMMAND ProcessGroupingTests)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    qt_add_executable(LinuxProcessServiceTests
+        tests/LinuxProcessServiceTests.cpp
+        src/core/Logging.cpp
+        src/core/ProcessGrouping.cpp
+        src/platform/linux/LinuxProcessService.cpp
+    )
+    target_include_directories(LinuxProcessServiceTests PRIVATE src)
+    target_link_libraries(LinuxProcessServiceTests PRIVATE Qt6::Core Qt6::Test)
+    add_test(NAME LinuxProcessServiceTests COMMAND LinuxProcessServiceTests)
+endif()
+
 qt_add_executable(UiSafetyTests
     tests/UiSafetyTests.cpp
     src/core/AlertEngine.cpp
@@ -176,4 +193,39 @@ target_include_directories(UiSafetyTests PRIVATE src)
 target_link_libraries(UiSafetyTests PRIVATE Qt6::Core Qt6::Widgets Qt6::Test)
 
 add_test(NAME UiSafetyTests COMMAND UiSafetyTests)
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(SWAP_ALERT_PACKAGE_LICENSE "LicenseRef-Proprietary" CACHE STRING
+        "SPDX license identifier used by native Linux packages")
+
+    set(CPACK_PACKAGE_NAME "swap-alert")
+    set(CPACK_PACKAGE_VENDOR "Swap Alert")
+    set(CPACK_PACKAGE_CONTACT "Ahmad Alimuddin <achmad_aal@hotmail.com>")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_DESCRIPTION}")
+    set(CPACK_PACKAGE_HOMEPAGE_URL "${PROJECT_HOMEPAGE_URL}")
+    set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
+    set(CPACK_STRIP_FILES TRUE)
+
+    set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+    set(CPACK_DEBIAN_PACKAGE_MAINTAINER "${CPACK_PACKAGE_CONTACT}")
+    set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
+    set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+    set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+
+    set(CPACK_RPM_FILE_NAME RPM-DEFAULT)
+    set(CPACK_RPM_PACKAGE_RELEASE 1)
+    set(CPACK_RPM_PACKAGE_LICENSE "${SWAP_ALERT_PACKAGE_LICENSE}")
+    set(CPACK_RPM_PACKAGE_GROUP "Applications/System")
+    set(CPACK_RPM_PACKAGE_AUTOREQPROV ON)
+    set(CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST_ADDITION
+        /usr/share/applications
+        /usr/share/icons
+        /usr/share/icons/hicolor
+        /usr/share/icons/hicolor/scalable
+        /usr/share/icons/hicolor/scalable/apps
+        /usr/share/metainfo
+    )
+
+    include(CPack)
 endif()

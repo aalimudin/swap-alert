@@ -62,15 +62,52 @@ The Flatpak grants only display access, narrowly scoped notification/status-noti
 
 Before publishing, test the exact Flatpak bundle on GNOME and KDE. Confirm swap readings, notifications, tray recovery, suspend/resume handling, settings persistence, and Flatpak-aware start-at-login behavior.
 
+## Native DEB and RPM packages
+
+Native packages use the same `/usr` install layout and desktop metadata as the cross-distribution artifacts. Build each package on the oldest release of its target distribution so the executable and automatically generated shared-library dependencies match that distribution.
+
+Install the packaging tools in addition to the normal build dependencies:
+
+```bash
+# Debian or Ubuntu
+sudo apt install dpkg-dev file
+
+# Fedora
+sudo dnf install rpm-build
+```
+
+The script detects the host-native format by default, builds the application, runs all tests, and writes the package to `dist/`:
+
+```bash
+./packaging/linux/package-native.sh
+
+# Explicit formats when the corresponding toolchains are installed:
+./packaging/linux/package-native.sh deb
+./packaging/linux/package-native.sh rpm
+./packaging/linux/package-native.sh all
+```
+
+Inspect package identity, dependencies, and required payload files with:
+
+```bash
+./packaging/linux/verify-native-package.sh \
+  dist/swap-alert_0.1.0_amd64.deb
+./packaging/linux/verify-native-package.sh \
+  dist/swap-alert-0.1.0-1.x86_64.rpm
+```
+
+DEB dependencies are derived by `dpkg-shlibdeps`; RPM dependencies use RPM's automatic ELF requirement generation. Do not build one distribution's package against another distribution's Qt libraries. Until the repository contains a project license, RPM metadata defaults to `LicenseRef-Proprietary`; release builds can override it with `PACKAGE_LICENSE=SPDX-ID` after the project license is chosen.
+
 ## Linux release checklist
 
 1. Update the project version and AppStream release entry.
 2. Build and test the AppImage on the oldest supported build baseline.
 3. Run `verify-appimage.sh`, then test the same artifact on supported Ubuntu and Fedora releases.
 4. Build and verify the Flatpak bundle.
-5. Test GNOME and KDE tray, notification, suspend/resume, and autostart behavior.
-6. Confirm the Flatpak cleanup limitation is visible and the AppImage cleanup flow remains safe.
-7. Generate checksums for published artifacts and tag the exact source revision.
+5. Build DEB and RPM convenience packages on their target distribution baselines.
+6. Test GNOME and KDE tray, notification, suspend/resume, and autostart behavior.
+7. Confirm the Flatpak cleanup limitation is visible and the AppImage cleanup flow remains safe.
+8. Generate checksums for published artifacts and tag the exact source revision.
 
 ## macOS DMG
 
