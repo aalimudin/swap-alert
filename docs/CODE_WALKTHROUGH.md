@@ -1,196 +1,127 @@
-# Swap Alert Code Walkthrough
+# Learning C++ and Systems Programming with Swap Alert
 
-This guide explains how Swap Alert works from application startup through swap monitoring, alert evaluation, notifications, and application cleanup. It is intended to make the repository useful as a learning project, not just as finished code.
+This guide uses Swap Alert as a textbook. Every lesson takes one real piece of the app, explains the idea behind it in plain language, walks through the code that implements it, and then gives you something to **run in your terminal** so you can see the operating system do it for yourself.
 
-## What this project demonstrates
+You do not need to know C++ already. You should be comfortable with *some* programming language (Python, JavaScript, Go…) and with opening a terminal.
 
-Swap Alert combines several useful desktop-development concepts:
+---
 
-- Building a native macOS application with Qt 6 and CMake
-- Using Qt's event loop, signals, slots, timers, dialogs, and system tray
-- Mixing portable C++ with Objective-C++
-- Calling native Apple frameworks from a Qt application
-- Separating business logic from operating-system integrations
-- Implementing an alert state machine with hysteresis and cooldowns
-- Persisting user preferences
-- Testing business logic without launching the GUI
+## How to use this guide
 
-## Project map
+- **Read the lessons in order.** Each one builds on the previous one. Lesson 1 gives you just enough C++ to read the code, 2–5 are about the operating system, 6–7 go deeper into C++ design, 8–9 are about Qt, and 10–13 put it all together.
+- **Keep the source open next to this guide.** File paths are given as `src/core/AlertEngine.cpp → evaluate()`. Read the real file, not just the excerpt here.
+- **Do the "Try it" boxes.** They take a minute each and are where most of the learning happens.
+- **Answer the "Check yourself" questions before moving on.** Answers are hidden under a fold.
+- Commands marked 🐧 are Linux-only, 🍎 are macOS-only.
+
+### Lesson map
+
+| # | Lesson | You will learn |
+|---|--------|----------------|
+| 0 | [The big picture](#lesson-0--the-big-picture) | What swap is, what the app does, how data flows |
+| 1 | [C++ building blocks](#lesson-1--c-building-blocks-in-this-codebase) | Headers, `struct`, `enum class`, `const`, references, `std::optional` |
+| 2 | [Reading swap on Linux](#lesson-2--reading-swap-on-linux-proc) | `/proc`, "everything is a file", defensive parsing |
+| 3 | [Reading swap on macOS](#lesson-3--reading-swap-on-macos-sysctl) | System calls, `sysctl`, `errno` |
+| 4 | [Telling time correctly](#lesson-4--telling-time-correctly-clocks) | Wall clock vs monotonic clocks, sleep-aware time |
+| 5 | [Processes and signals](#lesson-5--processes-and-signals) | PIDs, UIDs, the process tree, `kill`, `SIGTERM` vs `SIGKILL` |
+| 6 | [Interfaces and polymorphism](#lesson-6--interfaces-virtual-functions-and-dependency-injection) | Virtual functions, abstract classes, dependency injection, fakes |
+| 7 | [Ownership and lifetime](#lesson-7--ownership-and-object-lifetime) | Stack vs heap, RAII, `std::unique_ptr`, `std::move`, pimpl |
+| 8 | [Meet Qt](#lesson-8--meet-qt) | What Qt is, `QObject` and moc, parent/child ownership, widgets, layouts, the tray, `QSettings`, Qt Test |
+| 9 | [The event loop](#lesson-9--the-event-loop-timers-signals-and-slots) | Qt event loop, timers, signals/slots, lambdas, threads |
+| 10 | [The alert state machine](#lesson-10--the-alert-state-machine) | State machines, hysteresis, cooldowns — traced step by step |
+| 11 | [Talking to other programs](#lesson-11--talking-to-other-programs-d-bus-and-apple-frameworks) | D-Bus on Linux, Objective-C++ on macOS, callbacks across threads |
+| 12 | [Writing files safely](#lesson-12--writing-files-safely) | Atomic writes, log rotation, mutexes |
+| 13 | [Building and testing](#lesson-13--building-and-testing) | Compiling vs linking, CMake, the preprocessor, unit tests |
+| — | [Exercises](#exercises) · [Glossary](#glossary) · [Further reading](#further-reading) | |
+
+---
+
+## Lesson 0 — The big picture
+
+### What is swap?
+
+Your computer's RAM is fast but limited. When programs ask for more memory than physically exists, the operating system (OS) takes chunks of memory that haven't been used recently and writes them to disk. That disk area is **swap**. When a program needs that memory again, the OS reads it back.
+
+Each chunk is a **page** (usually 4 KiB on Linux, 16 KiB on Apple Silicon). Moving pages to and from disk is thousands of times slower than RAM, so a computer that is swapping heavily feels sluggish. A little swap is normal. A lot of swap means you are running out of memory.
+
+Swap Alert watches how much swap is in use and warns you before things get bad.
+
+### What the app does, in one paragraph
+
+Every few seconds the app asks the OS "how much swap is used?". It feeds that number into a small decision-making component (the **alert engine**) that decides which warning level (**tier**) we're at and whether a *new* alert should fire. The tray icon changes colour, and if an alert fires the app shows a notification, a warning window, or a window that helps you quit memory-hungry applications.
+
+### The three layers
+
+The code is split so that **things that depend on the OS** are kept away from **things that don't**:
 
 ```text
-swap-alert/
-├── CMakeLists.txt
-├── packaging/
+src/
+├── app/       main.cpp — creates everything and wires it together
+├── core/      pure logic: alert engine, monitor, settings. No OS-specific code.
+├── platform/  one folder per OS. Talks to the kernel and system services.
+│   ├── linux/
 │   └── macos/
-│       └── Info.plist.in
-├── src/
-│   ├── app/
-│   │   └── main.cpp
-│   ├── core/
-│   │   ├── AlertEngine.*
-│   │   ├── AlertTier.hpp
-│   │   ├── DiagnosticLogger.*
-│   │   ├── IMonotonicClock.hpp
-│   │   ├── ISwapReader.hpp
-│   │   ├── Logging.*
-│   │   ├── ProcessGrouping.*
-│   │   ├── SettingsStore.*
-│   │   ├── SwapInfo.hpp
-│   │   └── SwapMonitor.*
-│   ├── platform/
-│   │   ├── IAutostartService.hpp
-│   │   ├── INotificationService.hpp
-│   │   ├── IProcessService.hpp
-│   │   ├── ISystemEventMonitor.hpp
-│   │   └── macos/
-│   │       ├── MacAutostartService.*
-│   │       ├── MacContinuousClock.*
-│   │       ├── MacNotificationService.*
-│   │       ├── MacProcessService.*
-│   │       ├── MacSwapReader.*
-│   │       └── MacSystemEventMonitor.*
-│   └── ui/
-│       ├── CleanupDialog.*
-│       ├── Format.hpp
-│       ├── SettingsDialog.*
-│       ├── StatusDialog.*
-│       ├── TrayController.*
-│       └── WarningDialog.*
-└── tests/
-    ├── AlertEngineTests.cpp
-    ├── ProcessGroupingTests.cpp
-    ├── SwapMonitorTests.cpp
-    └── UiSafetyTests.cpp
+├── ui/        Qt windows and the tray icon
+tests/         automated tests that run the core without any real OS data
 ```
 
-The folders have distinct responsibilities:
-
-- `app` assembles the application.
-- `core` contains portable behavior and data models.
-- `platform` contains operating-system integrations.
-- `ui` contains Qt widgets and presentation logic.
-- `tests` verifies behavior independently from the visible application.
-
-## Runtime data flow
-
-The most important path through the application is:
+### How data flows
 
 ```text
-macOS vm.swapusage
-        ↓
-  MacSwapReader
-        ↓
-   SwapMonitor
-        ↓
-   AlertEngine
-     ↙       ↘
-Tray update   Alert triggered
-               ↓
-       Notification / Dialog
+          ┌──────────── platform/ (OS-specific) ────────────┐
+Kernel ──▶│ LinuxSwapReader  (/proc/meminfo)                │
+          │ MacSwapReader    (sysctl vm.swapusage)          │
+          └───────────────────────┬─────────────────────────┘
+                                  │  SwapInfo { total, used, free }
+                                  ▼
+                       core/SwapMonitor  ◀── QTimer fires every N seconds
+                                  │
+                                  ▼
+                       core/AlertEngine  "which tier? should we alert?"
+                          │                   │
+             sampleUpdated│                   │alertTriggered
+                          ▼                   ▼
+               ui/TrayController     app/main.cpp → notification / dialog
 ```
 
-Every polling interval, Swap Alert reads the current swap values, evaluates them against the configured thresholds, updates the menu-bar display, and presents an alert only when a tier is newly triggered.
+> **Key idea:** `core/` never includes anything from `platform/linux` or `platform/macos`. That is what lets the same alert logic run on two OSes and inside tests.
 
-## 1. Build configuration
+### Qt in 2 minutes
 
-The project starts in [`CMakeLists.txt`](../CMakeLists.txt).
+You'll see a lot of names starting with `Q` before Qt gets its own lesson (Lesson 8). They all come from **Qt**, a cross-platform C++ library for desktop apps. Until then, this is all you need:
 
-```cmake
-project(SwapAlert VERSION 0.1.0 LANGUAGES CXX OBJCXX)
-```
+| You see | Read it as |
+|---|---|
+| `QString` | Text (like `std::string` or a Python `str`) |
+| `QByteArray` | Raw bytes |
+| `QFile`, `QDir` | A file, a folder |
+| `QVector`, `QHash`, `QSet` | A list, a dictionary/map, a set |
+| `quint64`, `qint64` | Unsigned / signed 64-bit integer |
+| `QStringLiteral("...")` | A string literal, built at compile time |
+| `"%1 of %2".arg(a, b)` | String formatting: fills in `%1`, `%2` |
+| `QTimer`, `QDialog`, `emit`, `connect(...)` | Timers, windows, signals — covered in Lessons 8–9 |
+| `qCInfo(logMonitor) << ...` | Writes a log line |
 
-There are two source languages:
+---
 
-- C++ contains the portable application and Qt code.
-- Objective-C++ allows C++ and Apple Objective-C APIs to be used in the same `.mm` file.
+## Lesson 1 — C++ building blocks in this codebase
 
-The project requires C++20 and targets macOS 13 or later:
+Before reading real code, here are the C++ basics you'll meet in every file. Every example is taken from the repo, so you'll recognise these lines when they come back in later lessons. Don't try to memorise it all; skim it now and come back when something looks unfamiliar.
 
-```cmake
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0")
-```
+### Headers (`.hpp`) and source files (`.cpp` / `.mm`)
 
-Qt's `AUTOMOC` support generates the extra C++ code required by classes that contain the `Q_OBJECT` macro:
+C++ compiles each `.cpp` file separately. For `SwapMonitor.cpp` to call `AlertEngine::evaluate()`, it must first see a **declaration** saying that function exists. Declarations go in headers; `#include "core/AlertEngine.hpp"` literally pastes the header's text in.
 
-```cmake
-set(CMAKE_AUTOMOC ON)
-```
+- `.hpp` — *what exists* (class layouts, function signatures).
+- `.cpp` — *how it works* (function bodies).
+- `.mm` — Objective-C++ source, used on macOS so C++ and Apple's Objective-C APIs can be mixed (Lesson 11).
 
-The application uses Qt Core and Widgets:
+`#pragma once` at the top of every header means "if this file was already included, skip it", preventing duplicate definitions.
 
-```cmake
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Test)
-```
-
-Finding Qt Widgets also causes Qt to check some optional graphics integrations. That is why CMake may print:
-
-```text
-Could NOT find WrapVulkanHeaders (missing: Vulkan_INCLUDE_DIR)
-```
-
-Swap Alert does not use Vulkan, so this message is harmless if CMake continues with `Configuring done` and `Generating done`.
-
-The native Apple frameworks are linked here:
-
-```cmake
-target_link_libraries(SwapAlert PRIVATE
-    Qt6::Core
-    Qt6::Widgets
-    "-framework AppKit"
-    "-framework ServiceManagement"
-    "-framework UserNotifications"
-)
-```
-
-`qt_add_executable(... MACOSX_BUNDLE)` produces `Swap Alert.app` instead of a plain command-line executable.
-
-## 2. Application startup and dependency assembly
-
-The application entry point is [`src/app/main.cpp`](../src/app/main.cpp).
-
-It creates `QApplication`, which owns the main Qt event loop:
+### `struct` for plain data
 
 ```cpp
-QApplication application(argc, argv);
-QApplication::setQuitOnLastWindowClosed(false);
-```
-
-The second line is important for a tray application. Closing the Settings window must not terminate the monitor.
-
-`main()` constructs the application's services and UI objects:
-
-```cpp
-SettingsStore settings;
-MacAutostartService autostartService;
-MacNotificationService notificationService;
-MacProcessService processService;
-SwapMonitor monitor(std::make_unique<MacSwapReader>(), settings,
-    std::make_unique<MacContinuousClock>());
-TrayController tray(settings);
-SettingsDialog settingsDialog(settings, autostartService);
-WarningDialog warningDialog;
-CleanupDialog cleanupDialog(processService);
-```
-
-This is manual dependency injection. For example, `SwapMonitor` does not construct a `MacSwapReader` internally. It receives an object that implements `ISwapReader`. This makes the monitor easier to test and eventually allows a `LinuxSwapReader` to be supplied instead.
-
-After creating the objects, `main()` connects their signals and slots. Finally, it starts the application:
-
-```cpp
-notificationService.requestAuthorization();
-tray.show();
-monitor.start();
-return application.exec();
-```
-
-`application.exec()` starts Qt's event loop. Timer events, menu clicks, signals, and dialog actions all run through this loop.
-
-## 3. Data models and interfaces
-
-[`src/core/SwapInfo.hpp`](../src/core/SwapInfo.hpp) defines the swap reading shared by the application:
-
-```cpp
+// src/core/SwapInfo.hpp
 struct SwapInfo {
     quint64 totalBytes = 0;
     quint64 usedBytes = 0;
@@ -198,75 +129,220 @@ struct SwapInfo {
 };
 ```
 
-It contains only data and knows nothing about macOS, Qt widgets, or thresholds.
+A `struct` bundles values. `= 0` gives a default, so a `SwapInfo{}` is never full of garbage. `quint64` is Qt's name for an unsigned 64-bit integer (same as `std::uint64_t`).
 
-[`src/core/AlertTier.hpp`](../src/core/AlertTier.hpp) defines the possible states:
+(`struct` and `class` are almost the same in C++; the only difference is that `struct` members are public by default. By convention, `struct` is used for plain data and `class` for things with behaviour.)
 
-```cpp
-enum class AlertTier : quint8 {
-    Normal = 0,
-    Tier1 = 1,
-    Tier2 = 2,
-    Tier3 = 3,
-};
-```
-
-The platform interfaces describe what the core application needs without prescribing how an operating system provides it:
-
-- `ISwapReader` reads swap usage.
-- `INotificationService` sends notifications.
-- `IProcessService` lists and terminates applications.
-- `IAutostartService` manages launch at login.
-- `ISystemEventMonitor` reports sleep, wake, session, shutdown, and desktop-restart events.
-
-This pattern is sometimes called a port-and-adapter or dependency-inversion architecture.
-
-## System lifecycle integration
-
-`MacSystemEventMonitor.mm` subscribes to `NSWorkspace` notifications. It translates native notifications into the portable `SystemEvent` enum instead of allowing Objective-C types to leak into the rest of the application.
-
-Before sleep or when the login session becomes inactive, `main.cpp` calls `SwapMonitor::suspendForSystemEvent()`. This stops the timer and rejects manual refreshes during suspension. After wake and session activation, `resumeAfterSystemEvent()` restarts the timer and immediately reads a fresh sample. The alert engine still uses `mach_continuous_time`, so cooldown and snooze durations account for time spent asleep without inventing a swap-growth sample.
-
-SystemUIServer owns macOS menu-bar extras. If it or Finder restarts, Qt can temporarily lose the visible status item. The native event monitor detects those application launches and asks `TrayController` to show its existing icon again.
-
-The lifecycle unit test injects a fake reader, starts the monitor, suspends it, verifies that refresh produces no sample, and verifies that resume produces exactly one fresh sample.
-
-## Structured diagnostic logging
-
-`Logging.hpp` declares Qt logging categories such as `swapalert.monitor`, `swapalert.alerts`, and `swapalert.system`. Categories make a mixed log easier to filter than unlabelled print statements.
-
-`DiagnosticLogger::install()` installs a Qt message handler at startup. Each record contains a UTC timestamp, severity, category, and message. The file is stored under the application's `QStandardPaths::AppLocalDataLocation`, rotates at 1 MB, and retains two prior files. Messages are also forwarded to Qt's original handler, so they remain visible in a development terminal.
-
-The tray action **Open Logs Folder…** resolves the path at runtime and opens it in Finder. Logging records numeric process IDs and operation results, but not application document contents.
-
-## Packaging, signing, and notarization
-
-`packaging/macos/package.sh` performs a Release configuration, builds and tests it, installs the app into a staging directory, and runs Qt's `macdeployqt`. That deployment step copies the Qt frameworks and plugins into the bundle and rewrites Mach-O library references so the release no longer depends on Homebrew paths.
-
-Without a signing identity the script applies an ad-hoc signature for local testing. With `SIGN_IDENTITY`, `macdeployqt` signs nested components using the hardened runtime and timestamp options intended for notarization. The script then creates and signs a compressed DMG. If `NOTARIZE=1`, it submits that DMG through `notarytool`, waits for the result, and staples Apple's ticket.
-
-`packaging/macos/verify-package.sh` mounts the finished image read-only, checks the bundle signature and property list, and scans every Mach-O file for development-only Homebrew dependencies. See [`docs/RELEASING.md`](RELEASING.md) for credential setup and the release checklist.
-
-## 4. Reading swap usage from macOS
-
-The native implementation is [`src/platform/macos/MacSwapReader.mm`](../src/platform/macos/MacSwapReader.mm).
-
-It calls the macOS `sysctlbyname` API directly:
+### `enum class` for a fixed set of states
 
 ```cpp
-xsw_usage usage {};
-size_t size = sizeof(usage);
-
-sysctlbyname("vm.swapusage", &usage, &size, nullptr, 0);
+// src/core/AlertTier.hpp
+enum class AlertTier : quint8 { Normal = 0, Tier1 = 1, Tier2 = 2, Tier3 = 3 };
 ```
 
-The returned `xsw_usage` structure contains:
+An `enum class` is a type with a closed list of named values. Unlike old C `enum`s, it won't silently convert to `int`. You must write `static_cast<int>(tier)`, which makes conversions visible. `: quint8` sets the storage to one byte.
 
-- `xsu_total`: current total swap capacity
-- `xsu_used`: swap currently in use
-- `xsu_avail`: available swap
+### `const` and `[[nodiscard]]`
 
-Those values are converted into the portable `SwapInfo` structure:
+```cpp
+[[nodiscard]] AlertTier currentTier() const;
+```
+
+- The trailing `const` promises this method doesn't modify the object. The compiler enforces it.
+- `[[nodiscard]]` makes the compiler warn if a caller ignores the return value — calling `currentTier()` and throwing away the answer is surely a bug.
+- `const auto info = ...;` on a local variable means it can't be reassigned. This codebase uses `const` wherever possible; it makes code easier to reason about.
+
+### References (`&`) vs pointers (`*`)
+
+```cpp
+std::optional<SwapInfo> read(QString& errorMessage);
+```
+
+`QString& errorMessage` is a **reference**: an alias for the caller's variable. Assigning to `errorMessage` inside `read()` changes the caller's string. This is an **out-parameter** — a second way to return information.
+
+A **pointer** (`T*`) is a variable holding an address. It can be `nullptr` and can be re-pointed. A reference can't be null and always refers to the same thing. Rule of thumb: use a reference when "nothing" isn't a valid option.
+
+The symbols are confusing at first because `&` and `*` each mean two things depending on where they appear:
+
+| Code | Where | Meaning |
+|---|---|---|
+| `QString& name` | In a type | `name` is a reference |
+| `&usage` | In an expression | "The address of `usage`" — gives you a pointer |
+| `xsw_usage* p` | In a type | `p` is a pointer |
+| `*p` | In an expression | "The thing `p` points to" |
+| `p->field` | In an expression | Shorthand for `(*p).field` |
+
+You'll need the middle two rows in Lesson 3, where the code hands the kernel `&usage` so it can fill that struct in. C system APIs (the ones the OS provides) use pointers everywhere, because C has no references.
+
+### `std::optional` — "a value, or nothing"
+
+```cpp
+const auto info = m_reader->read(error);
+if (!info) {                 // no value: the read failed
+    emit readFailed(error);
+    return;
+}
+m_alertEngine.evaluate(info->usedBytes, ...);   // -> reaches inside
+emit sampleUpdated(*info, ...);                 // * gets the value out
+```
+
+Instead of returning a magic value like `-1` or an all-zero struct to mean "failed", the function returns `std::optional<SwapInfo>`. The type itself says "this might be empty", and you can't accidentally use a failed reading as if it were real. Inside the function, `return std::nullopt;` returns "nothing", and `return SwapInfo{...};` returns a value.
+
+(`emit` is a Qt keyword that announces an event to whoever is listening. Lesson 9 explains it.)
+
+### `static_cast` — explicit conversions
+
+```cpp
+return static_cast<qint64>(value.tv_sec) * 1000 + ...;
+```
+
+`static_cast<T>(x)` converts `x` to type `T`, and the compiler checks the conversion makes sense. You'll see it wherever numbers move between the OS's types and the app's own (`quint64`, `qint64`), and when converting an `enum class` to `int`. Writing it out makes every conversion easy to spot.
+
+### `auto`
+
+`auto x = expression;` lets the compiler infer the type. Used here mainly when the type is long or obvious from the right-hand side.
+
+### Anonymous namespaces
+
+```cpp
+namespace {
+int tierIndex(AlertTier tier) { return static_cast<int>(tier) - 1; }
+}
+```
+
+Functions inside `namespace { ... }` are private to that one `.cpp` file. It's the C++ way to say "helper, not part of the public API".
+
+---
+
+## Lesson 2 — Reading swap on Linux (`/proc`)
+
+**File:** `src/platform/linux/LinuxSwapReader.cpp → read()`
+
+### Concept: "everything is a file"
+
+Unix systems expose a surprising amount of kernel information as files. `/proc` is a **virtual filesystem**: nothing in it lives on disk. When you open `/proc/meminfo`, the kernel generates the text *at the moment you read it*.
+
+This means a program can learn about memory using nothing more than "open a file and read lines" — no special API needed.
+
+> **Try it 🐧**
+> ```bash
+> cat /proc/meminfo | grep -i swap
+> ls -l /proc/meminfo          # size is 0! (see below)
+> ```
+> You'll see lines like `SwapTotal:  8388604 kB` and `SwapFree: 8100000 kB`.
+
+### Concept: what is a system call?
+
+Your program cannot touch hardware or kernel memory directly. To do anything privileged — open a file, read it, get the time — it asks the kernel through a **system call** (syscall). `QFile::open()` eventually becomes the `openat` syscall, and `readLine()` becomes `read`.
+
+> **Try it 🐧** — watch the syscalls happen:
+> ```bash
+> strace -e trace=openat,read cat /proc/meminfo 2>&1 | grep -A1 meminfo
+> ```
+> `strace` prints every syscall a program makes. You'll see `openat(..., "/proc/meminfo", O_RDONLY)` and then `read(3, "MemTotal: ...", ...)`. The `3` is a **file descriptor** — a small integer the kernel hands you to refer to the open file.
+
+### Walking through the code
+
+```cpp
+std::optional<SwapInfo> LinuxSwapReader::read(QString& errorMessage)
+{
+    QFile file(m_meminfoPath);                       // usually "/proc/meminfo"
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        errorMessage = ...;
+        return std::nullopt;                         // "no value" — see Lesson 1
+    }
+```
+
+The path is stored in a member variable instead of hard-coded. Why? So tests can point the reader at a fake file with broken content (`tests/AlertEngineTests.cpp → linuxSwapReaderRejectsInvalidMeminfo`).
+
+```cpp
+    std::optional<quint64> totalKiB;
+    std::optional<quint64> freeKiB;
+    // procfs reports a zero file size, so QFile::atEnd() may be true before the first read.
+    while (!totalKiB || !freeKiB) {
+        const QByteArray rawLine = file.readLine();
+        if (rawLine.isEmpty() && file.atEnd()) break;
+```
+
+**The zero-size gotcha.** `ls -l /proc/meminfo` showed size 0 because the content doesn't exist until you read it. Code that checks "am I at the end?" *before* reading would stop immediately. This loop reads first, then checks. This is a classic `/proc` bug, and the comment is there to stop someone "simplifying" it back.
+
+```cpp
+        const auto fields = line.split(' ');         // ["SwapTotal:", "8388604", "kB"]
+        bool valid = false;
+        const quint64 value = fields.value(1).toULongLong(&valid);
+        if (fields.size() != 3 || fields.value(2) != "kB" || !valid
+            || value > std::numeric_limits<quint64>::max() / 1024) {
+            errorMessage = ...; return std::nullopt;
+        }
+```
+
+**Defensive parsing.** Data that comes from outside your program is untrusted, even from the kernel. Each check guards against something:
+
+| Check | Guards against |
+|---|---|
+| `fields.size() != 3` | A line with an unexpected format |
+| `!= "kB"` | A unit we don't understand |
+| `!valid` | Text that isn't a number |
+| `value > max / 1024` | **Integer overflow** — we're about to multiply by 1024 |
+
+The last one is subtle. `quint64` can hold at most ~1.8 × 10¹⁹. If `value × 1024` were bigger than that, the result would silently **wrap around** to a small number. Checking `value > max / 1024` *before* multiplying avoids that without needing a bigger type.
+
+```cpp
+    if (*freeKiB > *totalKiB) { errorMessage = ...; return std::nullopt; }
+    const quint64 totalBytes = *totalKiB * 1024;
+    const quint64 freeBytes  = *freeKiB  * 1024;
+    return SwapInfo {totalBytes, totalBytes - freeBytes, freeBytes};
+```
+
+**Unsigned subtraction.** `quint64` is *unsigned* — it can't be negative. If `free > total`, then `total - free` wouldn't be negative; it would wrap to an enormous number like 18 446 744 073 709 551 000. The check above makes the subtraction safe.
+
+> **Check yourself**
+> 1. Why does `/proc/meminfo` show a size of 0?
+> 2. What would happen if we removed the `free > total` check and the kernel reported nonsense?
+>
+> <details><summary>Answers</summary>
+>
+> 1. It's generated on demand by the kernel when read; there is no stored content to measure.
+> 2. `totalBytes - freeBytes` would wrap around to a huge number, and the app would report an absurd amount of used swap and likely fire a Tier 3 alert.
+> </details>
+
+---
+
+## Lesson 3 — Reading swap on macOS (`sysctl`)
+
+**File:** `src/platform/macos/MacSwapReader.mm → read()`
+
+### Concept: asking the kernel for a struct
+
+macOS has no `/proc`. Instead it has `sysctl`: a kernel interface where you ask for a value by name and the kernel copies it straight into memory you provide. No text, no parsing.
+
+> **Try it 🍎**
+> ```bash
+> sysctl vm.swapusage
+> # vm.swapusage: total = 2048.00M  used = 1024.50M  free = 1023.50M  (encrypted)
+> ```
+> The command-line tool prints text, but the program gets a binary struct.
+
+### Walking through the code
+
+```cpp
+xsw_usage usage {};                 // an empty struct; {} zero-fills every field
+size_t size = sizeof(usage);        // how many bytes we have room for
+if (sysctlbyname("vm.swapusage", &usage, &size, nullptr, 0) != 0) {
+    errorMessage = QStringLiteral("Unable to read vm.swapusage: %1")
+                       .arg(QString::fromLocal8Bit(std::strerror(errno)));
+    return std::nullopt;
+}
+```
+
+This is the **classic C API pattern**, and you'll see it everywhere in systems code:
+
+1. You allocate the memory (`usage` on the stack).
+2. You pass a **pointer** to it (`&usage` = "the address of usage") and its size.
+3. The function fills it in and returns `0` on success, `-1` on failure.
+4. On failure, the reason is in a global variable called **`errno`**, and `strerror(errno)` turns it into a message like "Operation not permitted".
+
+`&size` is also a pointer: the kernel may update it to say how many bytes it actually wrote. The two `nullptr, 0` arguments are for *setting* a value, which we don't do.
 
 ```cpp
 return SwapInfo {
@@ -276,433 +352,1240 @@ return SwapInfo {
 };
 ```
 
-This avoids launching a shell command such as `sysctl vm.swapusage` every ten seconds. It is faster, produces structured values, and avoids parsing localized command output.
+The `static_cast`s (Lesson 1) turn the macOS-specific field types into the portable `quint64` used everywhere else. After this line, nothing above the platform layer knows macOS was involved.
 
-If the native call fails, the reader returns `std::nullopt` and fills an error message. The monitor then reports the failure without evaluating an invalid sample.
+> **Try it 🍎** — write your own 10-line systems program:
+> ```cpp
+> // swap.cpp
+> #include <sys/sysctl.h>
+> #include <cerrno>
+> #include <cstdio>
+> #include <cstring>
+>
+> int main() {
+>     xsw_usage u {};
+>     size_t size = sizeof u;
+>     if (sysctlbyname("vm.swapusage", &u, &size, nullptr, 0) != 0) {
+>         std::printf("error: %s\n", std::strerror(errno));
+>         return 1;
+>     }
+>     std::printf("used %llu of %llu bytes\n",
+>         (unsigned long long)u.xsu_used, (unsigned long long)u.xsu_total);
+> }
+> ```
+> ```bash
+> c++ -std=c++20 swap.cpp -o swap && ./swap
+> ```
+> Now change `"vm.swapusage"` to `"vm.nope"` and see what `errno` says.
 
-## 5. Polling with `SwapMonitor`
+### Why not just run `sysctl` as a command?
 
-[`src/core/SwapMonitor.cpp`](../src/core/SwapMonitor.cpp) coordinates time, swap readings, and alert evaluation.
+You *could* launch `sysctl vm.swapusage` and parse its output. But that creates a whole new process every few seconds (expensive), and the text format can change between OS versions or languages. Calling the API directly is faster and returns typed data.
 
-Its constructor connects a `QTimer` to `refreshNow()`:
+> **Check yourself**
+> 1. In `sysctlbyname(..., &usage, &size, ...)`, who allocates the memory for `usage`?
+> 2. Where do you look to find out *why* a C system function failed?
+>
+> <details><summary>Answers</summary>
+>
+> 1. The caller (our code). The kernel only writes into it.
+> 2. `errno`, converted to text with `strerror(errno)`. Read it immediately — the next library call may overwrite it.
+> </details>
+
+---
+
+## Lesson 4 — Telling time correctly (clocks)
+
+**Files:** `src/core/IMonotonicClock.hpp`, `src/platform/linux/LinuxBootClock.cpp`, `src/platform/macos/MacContinuousClock.mm`
+
+### Concept: there is more than one "now"
+
+The app needs to measure durations: "has the 15-minute cooldown passed?", "is the snooze over?". The obvious approach — compare the current date/time — is wrong:
+
+| Clock | What it measures | Problem for us |
+|---|---|---|
+| **Wall clock** (`time()`, `QDateTime`) | Calendar date and time | Jumps when the user changes time zone, NTP corrects it, or daylight saving starts |
+| **Monotonic** (`CLOCK_MONOTONIC`, `mach_absolute_time`) | Time since some fixed point; never goes backwards | **Stops while the computer is asleep** on Linux and macOS |
+| **Monotonic incl. sleep** (`CLOCK_BOOTTIME`, `mach_continuous_time`) | Time since boot, including suspended time | ✅ What we want |
+
+If you close your laptop lid during a 1-hour snooze and open it 2 hours later, the snooze should be over. With plain monotonic time it wouldn't be.
+
+### Linux: `clock_gettime`
+
+```cpp
+qint64 LinuxBootClock::nowMs() const
+{
+    timespec value {};
+    if (clock_gettime(CLOCK_BOOTTIME, &value) != 0) return 0;
+    return static_cast<qint64>(value.tv_sec) * 1000 + value.tv_nsec / 1'000'000;
+}
+```
+
+Same pattern as Lesson 3: we own a struct, pass its address, the kernel fills it. `timespec` has two fields: whole seconds and the leftover nanoseconds. We convert both to milliseconds. (`1'000'000` — the `'` is just a digit separator for readability, allowed since C++14.)
+
+> **Try it 🐧** — see how long your machine has been asleep:
+> ```cpp
+> // clocks.cpp
+> #include <cstdio>
+> #include <ctime>
+> int main() {
+>     timespec mono {}, boot {};
+>     clock_gettime(CLOCK_MONOTONIC, &mono);
+>     clock_gettime(CLOCK_BOOTTIME, &boot);
+>     std::printf("monotonic: %ld s\nboottime:  %ld s\nslept:     %ld s\n",
+>         (long)mono.tv_sec, (long)boot.tv_sec, (long)(boot.tv_sec - mono.tv_sec));
+> }
+> ```
+> ```bash
+> c++ -std=c++20 clocks.cpp -o clocks && ./clocks
+> ```
+> Suspend your laptop for a minute, wake it, run again. The `slept` number grows.
+
+### macOS: Mach time and the timebase
+
+```cpp
+qint64 MacContinuousClock::nowMs() const
+{
+    static const mach_timebase_info_data_t timebase = [] {
+        mach_timebase_info_data_t result {};
+        mach_timebase_info(&result);
+        return result;
+    }();
+
+    const auto nanoseconds = static_cast<__uint128_t>(mach_continuous_time())
+        * timebase.numer / timebase.denom;
+    return static_cast<qint64>(nanoseconds / 1'000'000);
+}
+```
+
+Three things to learn here:
+
+1. **Ticks, not nanoseconds.** `mach_continuous_time()` returns hardware **ticks**. To convert to nanoseconds you multiply by `numer / denom` from `mach_timebase_info`. On Intel Macs that's 1/1; on Apple Silicon it's 125/3 (one tick ≈ 41.67 ns). Code that assumes ticks are nanoseconds works on Intel and is silently wrong on M-series chips.
+2. **Overflow again.** `ticks × 125` can exceed 64 bits after a long uptime, so the multiplication is done in a 128-bit integer (`__uint128_t`, a compiler extension).
+3. **`static` local + lambda.** `[] { ... }()` defines a function with no name (a **lambda**) and immediately calls it. Marking the result `static` means it runs **once**, the first time `nowMs()` is called; every later call reuses the stored value. C++ guarantees that first-time initialisation is thread-safe.
+
+### Why an interface?
+
+`SwapMonitor` doesn't call either function directly. It asks an `IMonotonicClock`. In tests, a `FakeClock` whose time you set by hand is passed instead, so a test can "wait 15 minutes" instantly. See Lesson 6.
+
+---
+
+## Lesson 5 — Processes and signals
+
+**Files:** `src/platform/linux/LinuxProcessService.cpp`, `src/platform/macos/MacProcessService.mm`, `src/core/ProcessGrouping.cpp`
+
+When swap is critical, the app shows which applications use the most memory and lets you quit them. That requires understanding processes.
+
+### Concept: what a process is
+
+A **process** is a running program. The kernel tracks, for each one:
+
+- **PID** — process ID, a number.
+- **PPID** — parent PID. Every process is started by another one, so processes form a **tree**.
+- **UID** — the user who owns it. You may only signal your own processes (unless you are root).
+- Its memory, open files, environment variables, and more.
+
+> **Try it** (both OSes)
+> ```bash
+> ps -o pid,ppid,uid,rss,comm -u "$USER" | head -20
+> echo "my shell is PID $$, my parent is $PPID"
+> ```
+> `rss` is **resident set size**: how much of the process's memory is currently in RAM, in KiB.
+
+> **Try it 🐧** — every process has a folder in `/proc`:
+> ```bash
+> ls /proc/$$                          # $$ = your shell's PID
+> grep -E 'Uid|PPid|VmRSS' /proc/$$/status
+> ls -l /proc/$$/exe                   # a symlink to the program's binary
+> tr '\0' '\n' < /proc/$$/environ | head   # environment variables, NUL-separated
+> ```
+
+### Listing processes on Linux
+
+`LinuxProcessService.cpp → inventory()` lists `/proc`, keeps only the entries whose names are numbers (those are PIDs), and calls `readProcess()` for each. `readProcess()` reads exactly the files you just looked at:
+
+| Source | What we take | Why |
+|---|---|---|
+| `/proc/<pid>/status` → `Uid:` | Owner | Skip other users' processes |
+| `/proc/<pid>/status` → `PPid:` | Parent | Build the tree |
+| `/proc/<pid>/status` → `VmRSS:` | Memory in RAM | Rank by memory use |
+| `/proc/<pid>/exe` (symlink) | Program name | Match to an installed app, protect system processes |
+| `/proc/<pid>/environ` | `GIO_LAUNCHED_DESKTOP_FILE`, `FLATPAK_ID`… | Figure out which app launched it |
+
+Notice it calls `status.readAll()` first and then splits into lines — the same zero-size `/proc` gotcha from Lesson 2.
+
+Many reads will fail (processes exit between listing and reading, or belong to other users). The code simply `continue`s past them. Processes appearing and disappearing while you look is normal.
+
+### Listing processes on macOS
+
+macOS uses two APIs:
+
+- `NSWorkspace.runningApplications` — Apple's list of *GUI* apps (the ones in the Dock).
+- `libproc` — lower level: `proc_listallpids()` to get every PID and `proc_pidinfo(..., PROC_PIDTBSDINFO, ...)` to read owner and parent. `proc_pid_rusage()` gives `ri_phys_footprint`, the same "physical memory" number Activity Monitor shows.
+
+`proc_listallpids` is called twice: first with `nullptr` to ask "how many are there?", then with a buffer of that size (+32 spare, because processes may start in between). This **ask-size-then-fill** pattern is common in C APIs.
+
+### Grouping: walking a tree
+
+Chrome, VS Code, Slack and friends run as one main process plus many helpers. To show "Chrome uses 3 GB" instead of 40 separate rows, `core/ProcessGrouping.cpp → groupApplicationProcesses()` sums each app's process **subtree**.
+
+It's a **breadth-first search** (BFS):
+
+```cpp
+QQueue<qint64> pending;
+pending.enqueue(root.processId);                 // start at the app's main PID
+// (also enqueue helpers whose bundle ID is "com.google.Chrome.*")
+
+while (!pending.isEmpty()) {
+    const qint64 processId = pending.dequeue();
+    if (included.contains(processId) || /* another app's root */) continue;
+    included.insert(processId);
+    memoryBytes += snapshot->memoryBytes;
+    for (qint64 child : childrenByParent.values(processId))
+        pending.enqueue(child);                  // visit children next
+}
+```
+
+`childrenByParent` is a `QMultiHash` — a map where one key (a parent PID) can have many values (child PIDs). It's built once up front so finding children is fast. `included` prevents visiting the same PID twice.
+
+This file is in `core/`, not `platform/`: it takes plain data (`ProcessSnapshot`) and has no OS calls, so it is tested directly in `tests/ProcessGroupingTests.cpp`.
+
+### Concept: signals — asking a process to stop
+
+On Unix you stop a process by sending it a **signal**, a small numbered notification delivered by the kernel. The two that matter here:
+
+| Signal | Number | What happens |
+|---|---|---|
+| `SIGTERM` | 15 | "Please exit." The program can catch it, save work, clean up, then exit. Or ignore it. |
+| `SIGKILL` | 9 | The kernel destroys the process immediately. It can't be caught. Unsaved work is lost. |
+
+> **Try it** (both OSes) — see the difference yourself:
+> ```bash
+> bash -c 'trap "echo got SIGTERM, ignoring it" TERM; while true; do sleep 1; done' &
+> PID=$!
+> kill -TERM $PID      # prints the message; the process keeps running
+> kill -KILL $PID      # gone, no message — it never got a chance
+> ```
+
+This is exactly why the cleanup window only enables **Force Quit** after a normal **Quit** was tried, and asks for confirmation (`src/ui/CleanupDialog.cpp`).
+
+On Linux the app calls the `kill` syscall directly:
+
+```cpp
+if (::kill(static_cast<pid_t>(processId), force ? SIGKILL : SIGTERM) != 0) {
+    errorMessage = ... std::strerror(errno) ...;
+```
+
+(`::kill` with leading `::` means "the global `kill` from the C library", not some other `kill` in scope.) On macOS, `NSRunningApplication.terminate` sends the app a polite "quit" Apple Event — the same as choosing *Quit* from its menu — and `forceTerminate` is the `SIGKILL` equivalent.
+
+### Concept: check-then-act races (and PID reuse)
+
+PIDs are recycled. Imagine:
+
+1. The window lists "Firefox, PID 4242".
+2. You go make coffee. Firefox exits. A new process starts and happens to get PID 4242.
+3. You click *Quit*. We'd signal the wrong process.
+
+This class of bug is called **TOCTOU** (time-of-check to time-of-use). `terminate()` defends against it by **re-checking everything immediately before acting**: re-reads the owner, re-checks the protected list, and on Linux re-runs the full inventory to confirm PID 4242 is still an eligible app root. A tiny window remains between the last check and `kill()`; modern Linux offers `pidfd_open` / `pidfd_send_signal` to close it completely (see Exercises).
+
+> **Check yourself**
+> 1. Why are the protected lists (`systemd`, `gnome-shell`, `Finder`, `Dock`…) needed if we already filter to the current user?
+> 2. Why is grouping in `core/` but listing in `platform/`?
+>
+> <details><summary>Answers</summary>
+>
+> 1. Your desktop shell, window manager, and Finder run as *you*. Killing them would wreck your session, so ownership alone isn't a sufficient safety check.
+> 2. Listing needs OS APIs; grouping is pure logic on plain data. Keeping it pure means it's shared by both OSes and testable without real processes.
+> </details>
+
+---
+
+## Lesson 6 — Interfaces, virtual functions, and dependency injection
+
+**Files:** `src/core/ISwapReader.hpp`, `src/platform/*.hpp`, `tests/SwapMonitorTests.cpp`
+
+### The problem
+
+`SwapMonitor` needs to read swap. But we have two very different readers (Linux and macOS), and in tests we want a third that returns whatever we tell it. How can `SwapMonitor` work with all three without knowing which one it has?
+
+### An interface in C++
+
+C++ has no `interface` keyword. You write a class with only **pure virtual** functions:
+
+```cpp
+// src/core/ISwapReader.hpp
+class ISwapReader {
+public:
+    virtual ~ISwapReader() = default;
+    virtual std::optional<SwapInfo> read(QString& errorMessage) = 0;
+};
+```
+
+- `virtual` — the actual function called is chosen **at runtime**, based on the real type of the object.
+- `= 0` — "no implementation here; subclasses must provide one". A class with any `= 0` function is **abstract** and can't be created directly.
+- `virtual ~ISwapReader()` — a virtual destructor. Without it, destroying a `MacSwapReader` through an `ISwapReader*` would only run the base destructor. Any class meant to be used through a base pointer needs one.
+
+An implementation:
+
+```cpp
+// src/platform/macos/MacSwapReader.hpp
+class MacSwapReader final : public ISwapReader {
+public:
+    std::optional<SwapInfo> read(QString& errorMessage) override;
+};
+```
+
+- `: public ISwapReader` — inherits from (implements) the interface.
+- `override` — asks the compiler to check this really overrides a base function. A typo in the signature becomes a compile error instead of a silent bug.
+- `final` — nothing may inherit from this class further.
+
+> **How it works underneath:** every object of a class with virtual functions carries a hidden pointer to a **vtable** — a table of function addresses for its real type. Calling `reader->read()` looks up the address in that table. That's one extra memory lookup per call — negligible here.
+
+### Dependency injection
+
+`SwapMonitor` doesn't create its reader. It's **handed** one:
+
+```cpp
+// src/core/SwapMonitor.hpp
+SwapMonitor(std::unique_ptr<ISwapReader> reader, SettingsStore& settings,
+    std::unique_ptr<IMonotonicClock> clock, QObject* parent = nullptr);
+```
+
+`main.cpp` chooses the real implementation for the current OS:
+
+```cpp
+SwapMonitor monitor(std::make_unique<PlatformSwapReader>(), settings,
+    std::make_unique<PlatformClock>());
+```
+
+…and `PlatformSwapReader` is just a type alias picked at compile time:
+
+```cpp
+#if defined(Q_OS_MACOS)
+using PlatformSwapReader = MacSwapReader;
+#elif defined(Q_OS_LINUX)
+using PlatformSwapReader = LinuxSwapReader;
+#endif
+```
+
+### The payoff: fakes in tests
+
+```cpp
+// tests/SwapMonitorTests.cpp
+class FakeSwapReader final : public ISwapReader {
+public:
+    std::optional<SwapInfo> read(QString& errorMessage) override {
+        if (shouldFail) { errorMessage = "Synthetic read failure"; return std::nullopt; }
+        return info;
+    }
+    SwapInfo info {400, 0, 400};
+    bool shouldFail = false;
+};
+```
+
+The test can now say "pretend 100 bytes of swap are used, then pretend 60 seconds have passed" — no real memory pressure and no waiting.
+
+All the other OS features use the same pattern: `INotificationService`, `IProcessService`, `IAutostartService`, `ISystemEventMonitor` (in `src/platform/`). This architecture is often called **ports and adapters**: `core/` defines the ports (interfaces), `platform/` provides adapters.
+
+> **Check yourself** — What would go wrong if `SwapMonitor` did `m_reader = std::make_unique<MacSwapReader>()` itself?
+>
+> <details><summary>Answer</summary>
+>
+> `core/` would depend on macOS code, so it wouldn't compile on Linux, and tests couldn't substitute a fake.
+> </details>
+
+---
+
+## Lesson 7 — Ownership and object lifetime
+
+C++ has no garbage collector. Every object has an exact moment it is created and an exact moment it is destroyed, and you need to know both.
+
+### Stack objects: destroyed at the closing brace
+
+Look at `main()`:
+
+```cpp
+SettingsStore settings;
+PlatformAutostartService autostartService;
+...
+SwapMonitor monitor(..., settings, ...);
+TrayController tray(settings);
+...
+return application.exec();
+}   // ← everything above is destroyed here, in REVERSE order
+```
+
+These are **stack** (automatic) objects. They live until `main` returns, then are destroyed last-created-first. That order matters: `monitor` holds a reference to `settings`, so `settings` must outlive `monitor`. Declaring `settings` first guarantees it.
+
+### RAII: cleanup tied to lifetime
+
+**RAII** ("Resource Acquisition Is Initialization") means: a resource (a file, a lock, a timer, an OS observer) is owned by an object, and the object's **destructor** releases it. You can't forget to clean up, because destruction is automatic.
+
+Examples in the repo:
+
+- `QFile file(path);` in `LinuxSwapReader::read()` — the file is closed when `file` goes out of scope, even on the early `return std::nullopt` paths.
+- `const QMutexLocker locker(&loggerMutex);` in `DiagnosticLogger.cpp` — the lock is released at the closing `}`.
+- `MacSystemEventMonitor::~MacSystemEventMonitor() { stop(); }` — unsubscribes from macOS notifications when destroyed.
+
+### `std::unique_ptr` and `std::move`: single ownership on the heap
+
+Sometimes an object must live on the **heap** (dynamic memory) — for example because we only know its concrete type at runtime, as with `ISwapReader`. `std::unique_ptr<T>` is a pointer that **owns** the object and deletes it automatically in its own destructor.
+
+"Unique" means only one `unique_ptr` can own it. You can't copy it, only **move** it:
+
+```cpp
+SwapMonitor::SwapMonitor(std::unique_ptr<ISwapReader> reader, ...)
+    : m_reader(std::move(reader))    // ownership transfers into the member
+```
+
+After `std::move`, the parameter `reader` is empty and `m_reader` owns the object. When `SwapMonitor` is destroyed, `m_reader` deletes the reader. No `delete` appears anywhere in this codebase.
+
+The `: m_reader(...), m_clock(...)` part is a **member initializer list** — it constructs members directly rather than default-constructing and then assigning.
+
+The tests show one more trick:
+
+```cpp
+auto reader = std::make_unique<FakeSwapReader>();
+auto* readerControl = reader.get();          // a non-owning "borrowed" pointer
+SwapMonitor monitor(std::move(reader), ...); // monitor now owns it
+readerControl->info = {400, 100, 300};       // test still pokes it via the borrowed pointer
+```
+
+That works because `monitor` (and thus the reader) outlives every use of `readerControl`.
+
+### References as members
+
+`SettingsStore& m_settings;` in `SwapMonitor` is a reference member: the monitor *uses* the settings but doesn't own them. This is safe only because `main()` guarantees `settings` outlives `monitor`.
+
+### The pimpl idiom
+
+`LinuxSystemEventMonitor.hpp` declares only `class LinuxSystemEventMonitorImpl;` (no body) and holds a `std::unique_ptr<LinuxSystemEventMonitorImpl>`. The real class, with all its D-Bus types, lives in the `.cpp`. This **pointer-to-implementation** ("pimpl") keeps heavy or platform-specific types out of the header, so code that includes the header doesn't need to know about D-Bus at all. `MacSystemEventMonitor` does the same with `struct Impl` to keep Objective-C types out of a C++ header.
+
+---
+
+## Lesson 8 — Meet Qt
+
+**Files:** `src/ui/WarningDialog.cpp`, `src/ui/TrayController.cpp`, `src/core/SettingsStore.cpp`, `CMakeLists.txt`
+
+You've been reading Qt code since Lesson 0's cheat sheet. Every name with a `Q` prefix (`QString`, `QFile`, `QTimer`, `QDialog`) comes from **Qt** (pronounced "cute"). This lesson explains what Qt is, how it's organised, and the handful of ideas you need to read any Qt code.
+
+### What Qt is
+
+C++ itself has no windows, buttons, tray icons, or settings files. The standard library gives you strings, containers and files, but nothing for a desktop app. Qt is a large C++ library that fills that gap, and it does so **across platforms**: the same `QSystemTrayIcon` code puts an icon in the macOS menu bar and in a Linux system tray.
+
+That's why most of this app is shared between macOS and Linux. Only the `platform/` folder needed per-OS code, for things Qt doesn't cover: reading swap, listing processes, native notifications, sleep events.
+
+Qt is split into **modules**. You only link the ones you use (see `find_package(Qt6 ... COMPONENTS ...)` in `CMakeLists.txt`):
+
+| Module | What it gives this app | Examples |
+|---|---|---|
+| **Qt Core** | Non-GUI foundations | `QObject`, `QString`, `QTimer`, `QFile`, `QSettings`, `QHash` |
+| **Qt Gui** | Drawing and images (pulled in by Widgets) | `QPainter`, `QPixmap`, `QIcon`, `QColor` |
+| **Qt Widgets** | Classic desktop UI controls | `QDialog`, `QPushButton`, `QTableWidget`, `QSystemTrayIcon` |
+| **Qt DBus** | D-Bus client (Linux only here) | `QDBusConnection`, `QDBusInterface` |
+| **Qt Test** | Unit-testing framework | `QCOMPARE`, `QSignalSpy` |
+
+> **Try it** — your first Qt program, outside this repo. Make an empty folder with two files:
+>
+> `CMakeLists.txt`
+> ```cmake
+> cmake_minimum_required(VERSION 3.24)
+> project(HelloQt LANGUAGES CXX)
+> set(CMAKE_CXX_STANDARD 20)
+> find_package(Qt6 REQUIRED COMPONENTS Widgets)
+> qt_standard_project_setup()
+> qt_add_executable(hello main.cpp)
+> target_link_libraries(hello PRIVATE Qt6::Widgets)
+> ```
+>
+> `main.cpp`
+> ```cpp
+> #include <QApplication>
+> #include <QLabel>
+> #include <QPushButton>
+> #include <QVBoxLayout>
+> #include <QWidget>
+>
+> int main(int argc, char* argv[])
+> {
+>     QApplication app(argc, argv);
+>
+>     QWidget window;                                    // top-level window, on the stack
+>     auto* label = new QLabel("Clicked 0 times", &window);
+>     auto* button = new QPushButton("Click me", &window);
+>     auto* layout = new QVBoxLayout(&window);
+>     layout->addWidget(label);
+>     layout->addWidget(button);
+>
+>     int clicks = 0;
+>     QObject::connect(button, &QPushButton::clicked, label, [&] {
+>         label->setText(QString("Clicked %1 times").arg(++clicks));
+>     });
+>
+>     window.show();
+>     return app.exec();
+> }
+> ```
+> ```bash
+> cmake -S . -B build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"   # 🍎; on 🐧 drop the -D part
+> cmake --build build && ./build/hello
+> ```
+> These 20 lines use every idea in this lesson: `QApplication`, widgets, parent/child ownership, layouts, a signal connected to a lambda, and the event loop. Keep this project for experiments; it builds in seconds, unlike the real app.
+
+### `QObject`: the base of (almost) everything
+
+Most Qt classes inherit from `QObject`. Being a `QObject` gives a class three abilities:
+
+1. **Signals and slots** (Lesson 9).
+2. **A parent and children** (next section).
+3. **Runtime type information** — Qt can look up a class's name, its signals, and its properties while the program runs.
+
+To get these, a class inherits from `QObject` *and* puts the `Q_OBJECT` macro at the top:
+
+```cpp
+// src/core/SettingsStore.hpp
+class SettingsStore final : public QObject {
+    Q_OBJECT
+public:
+    ...
+signals:
+    void changed();
+};
+```
+
+`signals:` isn't standard C++. Plain C++ can't produce the signal plumbing or the type information by itself, so Qt ships a code generator called **moc** (meta-object compiler). Before compiling, moc reads every header containing `Q_OBJECT` and writes an extra `.cpp` file implementing the missing parts. `set(CMAKE_AUTOMOC ON)` in `CMakeLists.txt` makes CMake run moc for you.
+
+> **Try it** — look at what moc generates:
+> ```bash
+> ls build/SwapAlert_autogen/*/moc_SwapMonitor.cpp
+> grep -n "sampleUpdated" build/SwapAlert_autogen/*/moc_SwapMonitor.cpp
+> ```
+> You'll find a real C++ function body for `SwapMonitor::sampleUpdated`. You never wrote it; moc did. Signals are ordinary member functions that moc implements for you.
+
+Two more things to know about `QObject`s:
+
+- **They can't be copied.** A `QObject` has an identity (connections, a parent, children), and copying it wouldn't make sense. That's why `main.cpp` passes them around by reference (`SettingsStore&`) or pointer, never by value.
+- **`Q_DECLARE_METATYPE(SwapInfo)`** (in `SwapInfo.hpp`) is for *your own* non-`QObject` types. It lets Qt store a `SwapInfo` inside a `QVariant`, which is needed when a signal carrying it is queued between threads or recorded by `QSignalSpy` in tests.
+
+### Parent/child ownership: Qt's answer to "who deletes this?"
+
+In Lesson 7 you learned that `std::unique_ptr` deletes what it owns. Qt has a second ownership system, and you'll see it on almost every UI line:
+
+```cpp
+// src/ui/WarningDialog.cpp
+auto* reviewButton = new QPushButton(QStringLiteral("Review Applications"), this);
+```
+
+That's a raw `new` with no matching `delete` anywhere. Isn't that a leak? No. The last argument, `this`, makes the dialog the button's **parent**. Every `QObject` keeps a list of its children, and **when a parent is destroyed, it deletes all its children**. The objects form a tree:
+
+```text
+WarningDialog  (owned by main(), on the stack)
+├── QLabel m_titleLabel
+├── QLabel m_usageLabel
+├── QLabel m_explanationLabel
+├── QPushButton "Review Applications"
+├── QPushButton "Snooze 15 Minutes"
+├── QPushButton "Dismiss"
+└── QVBoxLayout
+    └── QHBoxLayout buttons
+```
+
+When `main()` returns, `warningDialog` is destroyed and takes the whole tree with it. The tree is also searchable: the UI tests call `dialog.findChild<QPushButton*>("testTier1Button")` to find a button by its `objectName`, without the dialog exposing it.
+
+Rules of thumb for reading Qt code:
+
+| You see | Who deletes it |
+|---|---|
+| `new QThing(..., this)` / `new QThing(parent)` | The parent, automatically |
+| `QThing thing;` on the stack | Its scope, as usual (Lesson 7) |
+| `std::unique_ptr<Thing>` | The `unique_ptr` (used here for non-`QObject` types like `ISwapReader`) |
+| `new QThing` with **no parent** | **You must delete it yourself** |
+
+The last row really happens in this codebase, and it's a good puzzle:
+
+```cpp
+// src/ui/TrayController.cpp
+TrayController::TrayController(SettingsStore& settings, QObject* parent)
+    : QObject(parent)
+    , m_trayIcon(new QSystemTrayIcon(this))   // parent = this ✔
+    , m_menu(new QMenu)                       // no parent! ✘
+...
+TrayController::~TrayController()
+{
+    m_trayIcon->setContextMenu(nullptr);
+    delete m_menu;                            // so we delete it by hand
+}
+```
+
+Why not `new QMenu(this)`? `QMenu` is a **widget**, and a widget's parent must also be a widget, because a child widget is drawn *inside* its parent. `TrayController` is a plain `QObject`, not a widget, so it can't be a widget's parent. The menu is created without one and deleted explicitly. Detaching it from the tray icon first means the icon never holds a pointer to a deleted menu.
+
+> **Common bug:** giving a *stack* object a parent that is destroyed before it. The parent deletes it, then its scope ends and it's destroyed a second time → crash. Either allocate children with `new`, or make sure the parent outlives the stack object.
+
+### Widgets and layouts
+
+A **widget** is anything visible: a window, a label, a button, a table. A widget with no parent becomes a **top-level window**. Child widgets live inside it.
+
+You almost never position widgets with pixel coordinates. Instead you put them in a **layout**, which sizes and arranges them automatically and adapts when the window is resized or the font is bigger:
+
+```cpp
+// src/ui/WarningDialog.cpp
+auto* buttons = new QHBoxLayout;          // left-to-right row
+buttons->addWidget(snoozeButton);
+buttons->addStretch();                    // flexible empty space: pushes the rest to the right
+buttons->addWidget(dismissButton);
+buttons->addWidget(reviewButton);
+
+auto* layout = new QVBoxLayout(this);     // top-to-bottom; "this" = install on the dialog
+layout->addWidget(m_titleLabel);
+layout->addWidget(m_usageLabel);
+layout->addWidget(m_explanationLabel);
+layout->addSpacing(8);                    // fixed 8 px gap
+layout->addLayout(buttons);               // nest the row inside the column
+```
+
+Result:
+
+```text
+┌──────────────────────────────────────────────┐
+│ High swap usage                              │
+│ Currently using 4.20 GB of 8.00 GB swap.     │
+│ High swap usage can make the system feel ... │
+│                                              │
+│ [Snooze 15 Minutes]     [Dismiss] [Review…]  │
+└──────────────────────────────────────────────┘
+```
+
+Other layouts in the repo: `QFormLayout` in `SettingsDialog.cpp` (two-column "Label: control" rows) and `QDialogButtonBox`, which places Save/Cancel in the order each OS expects (macOS and Linux desktops order them differently).
+
+This app builds its UI **in code**. Qt also has a visual designer (Qt Designer, `.ui` files) and a separate declarative UI language (QML / Qt Quick). Both are worth knowing about; neither is used here.
+
+### Dialogs: `show()` vs modal
+
+Look at how the app opens its windows:
+
+```cpp
+// main.cpp → showSettings
+settingsDialog.show();
+settingsDialog.raise();           // bring to front
+settingsDialog.activateWindow();  // give it keyboard focus
+```
+
+`show()` is **non-modal**: it displays the window and returns immediately. The event loop keeps running, so the monitor keeps sampling while Settings is open. The dialogs are created once in `main()` and only shown and hidden; closing a window just hides it.
+
+By contrast, `QMessageBox::warning(...)` in `CleanupDialog.cpp` is **modal**: it blocks the parent window and doesn't return until the user clicks a button. Internally it runs a *nested* event loop, so timers still fire meanwhile. That's right for "Force quit these applications?", where you want an explicit yes or no before continuing.
+
+### The tray icon: `QSystemTrayIcon`, `QMenu`, `QAction`
+
+`TrayController` is the app's main UI. Its parts:
+
+- **`QSystemTrayIcon`** — the icon itself, in the macOS menu bar or the Linux tray.
+- **`QMenu`** — the dropdown that appears when you click it.
+- **`QAction`** — one menu item. Actions emit `triggered` when clicked. A **checkable** action (`setCheckable(true)`, used for "Monitoring Enabled") has an on/off state and emits `toggled(bool)`.
+
+The coloured dot is **drawn at runtime** instead of loaded from an image file:
+
+```cpp
+QIcon statusIcon(AlertTier tier)
+{
+    QPixmap pixmap(36, 36);                         // an empty 36×36 image
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);                      // draws onto the pixmap
+    painter.setRenderHint(QPainter::Antialiasing);  // smooth edges
+    painter.setPen(Qt::NoPen);                      // no outline
+    painter.setBrush(colorForTier(tier));           // fill colour
+    painter.drawEllipse(6, 6, 24, 24);
+    return QIcon(pixmap);
+}
+```
+
+`QPainter` is Qt's 2D drawing API. The same calls draw onto widgets, images or PDFs.
+
+### Breaking feedback loops with `QSignalBlocker`
+
+There are two ways to toggle monitoring: the tray's checkbox and the Settings dialog, and both must stay in sync. When settings change, the tray updates its checkbox:
+
+```cpp
+connect(&m_settings, &SettingsStore::changed, this, [this] {
+    const QSignalBlocker blocker(m_monitoringAction);
+    m_monitoringAction->setChecked(m_settings.monitoringEnabled());
+    ...
+});
+```
+
+Without the blocker, here's what happens when you untick "Enable monitoring" in Settings:
+
+```text
+Settings saves → changed() → tray calls setChecked(false)
+  → QAction emits toggled(false) → main.cpp: setMonitoringEnabled(false)
+    → writes the same value again → changed() a second time
+```
+
+It stops there (`toggled` only fires when the value actually changes), but the setting is written twice and every listener runs twice. `QSignalBlocker` mutes the action's signals until `blocker` goes out of scope — RAII again. Use it whenever you update a widget *from* your data and don't want the widget to echo the change back.
+
+### Qt's own types vs the standard library
+
+The code mixes `QString` with `std::optional`, and `QVector` with `std::array`. Qt is older than much of modern C++, so it has its own versions of many things:
+
+| Qt | Standard C++ | Notes |
+|---|---|---|
+| `QString` | `std::string` | **Unicode text** (stored as UTF-16). Has `.arg()` for formatting. |
+| `QByteArray` | `std::string` / `std::vector<char>` | **Raw bytes**. Used when parsing `/proc` files, which are bytes, not user-facing text. |
+| `QVector` / `QList` | `std::vector` | In Qt 6 these are the same class. |
+| `QHash`, `QMultiHash`, `QSet` | `std::unordered_map`, `unordered_multimap`, `unordered_set` | |
+| `quint64`, `qint64` | `std::uint64_t`, `std::int64_t` | |
+
+The rule this codebase follows: **use Qt types for data you hand to Qt APIs** (text for labels, lists for tables), and **standard types where Qt has no equivalent or where it's about ownership** (`std::optional`, `std::unique_ptr`, `std::function`, `std::array`).
+
+Two string habits you'll see everywhere:
+
+```cpp
+QStringLiteral("Swap: %1 of %2").arg(formatBytes(info.usedBytes), formatBytes(info.totalBytes))
+```
+
+- `QStringLiteral("...")` builds the string at **compile time**, avoiding a conversion every time the line runs.
+- `.arg()` replaces `%1`, `%2`… in order. It's safer than gluing strings with `+`, and translators can reorder the placeholders.
+
+**Implicit sharing.** Copying a `QString`, `QByteArray` or `QVector` is cheap: the copy shares the same buffer until one of them is *modified*, and only then makes its own copy. This is called **copy-on-write**, and it's why Qt code often passes containers by value without worrying about cost.
+
+### Cross-platform helpers used in this app
+
+Much of Qt's value is small things that differ per OS, handled once for you:
+
+| Class | Used in | What it hides |
+|---|---|---|
+| `QSettings` | `SettingsStore.cpp` | Where and how to store preferences |
+| `QStandardPaths` | `DiagnosticLogger.cpp` | "Where do app data and config files go on this OS?" |
+| `QFile`, `QSaveFile`, `QDir` | Linux platform code, logger | File I/O and paths (Lesson 12) |
+| `QDesktopServices::openUrl` | `main.cpp` (Open Logs Folder) | Opens Finder or the Linux file manager |
+| `QTimer::singleShot` | `CleanupDialog.cpp` | "Run this once in 1.5 s" without a timer member |
+| `QApplication::alert` | `WarningDialog.cpp` | Bounces the Dock icon / flashes the taskbar entry |
+
+`SettingsStore` is a thin wrapper around `QSettings`:
+
+```cpp
+m_settings(QSettings::IniFormat, QSettings::UserScope, "SwapAlert", "SwapAlert")
+...
+return m_settings.value("alerts/cooldownMinutes", 15).toInt();   // 15 if never saved
+```
+
+`value(key, default)` returns a `QVariant`, a box that can hold any type, and `.toInt()` unboxes it. `IniFormat` means a plain text file you can read.
+
+> **Try it** — open the app's settings file (after saving something in Settings):
+> ```bash
+> cat ~/.config/SwapAlert/SwapAlert.ini
+> ```
+> You'll see `[alerts]`, `[monitoring]` and `[thresholds]` sections: the `/` in `"alerts/cooldownMinutes"` became an INI section. Quit the app, edit a value, start it again, and watch the dashboard pick it up.
+
+### Two ways to write `connect`
+
+Most of the code uses the modern form:
 
 ```cpp
 connect(&m_timer, &QTimer::timeout, this, &SwapMonitor::refreshNow);
 ```
 
-When `start()` is called, the monitor starts the timer and immediately takes its first reading:
+The arguments are real C++ function pointers, so a typo or a mismatched argument type is a **compile error**.
+
+`LinuxSystemEventMonitor.cpp` uses the older, string-based form:
 
 ```cpp
-m_timer.start();
-refreshNow();
+systemBus.connect(..., QStringLiteral("PrepareForSleep"), this, SLOT(prepareForSleep(bool)));
 ```
 
-Each refresh follows these steps:
+`SLOT(...)` turns the function signature into a *string* that is looked up at runtime. A typo compiles fine and only prints a warning when the program runs. It's used here because the signal belongs to *another process* on D-Bus, which C++ can't know about at compile time. For that string lookup to work, the class declaring `prepareForSleep` needs `Q_OBJECT` and a `private slots:` section. And because that class lives in a `.cpp` file instead of a header, the file ends with `#include "LinuxSystemEventMonitor.moc"` so moc's generated code gets compiled in.
 
-1. Check whether monitoring is enabled.
-2. Ask `ISwapReader` for the current values.
-3. Stop if the reading failed.
-4. Pass used bytes to `AlertEngine`.
-5. Emit a sample update for the tray.
-6. Emit an alert only when a tier was newly triggered and alerts are not snoozed.
+### Qt Test in one minute
+
+The tests in `tests/` use Qt's own test framework:
 
 ```cpp
-const auto evaluation =
-    m_alertEngine.evaluate(info->usedBytes, m_clock->nowMs());
+class UiSafetyTests final : public QObject {
+    Q_OBJECT
+private slots:                       // each private slot is one test case
+    void testButtonsEmitEveryTier();
+    ...
+};
 
-emit sampleUpdated(*info, evaluation.currentTier);
+QSignalSpy spy(&dialog, &SettingsDialog::testAlertRequested);  // records every emission
+QCOMPARE(spy.count(), 3);                                      // prints both values on failure
+QTRY_VERIFY_WITH_TIMEOUT(forceButton->isEnabled(), 2500);      // runs the event loop until true or timeout
+QTEST_MAIN(UiSafetyTests)                                      // generates main()
+```
 
-if (evaluation.triggeredTier && !isSnoozed()) {
-    emit alertTriggered(*evaluation.triggeredTier, *info);
+`QStandardPaths::setTestModeEnabled(true)` (in `initTestCase()`) redirects settings and data paths to a test location, so running the tests never overwrites your real preferences.
+
+> **Check yourself**
+> 1. In `WarningDialog`'s constructor, several objects are created with `new` and none are deleted. Why isn't that a leak?
+> 2. Why is `m_menu` deleted by hand in `~TrayController()`?
+> 3. What's the difference between what a `QString` and a `QByteArray` hold?
+>
+> <details><summary>Answers</summary>
+>
+> 1. They're all created with the dialog (`this`) as their parent, so the dialog deletes them when it is destroyed.
+> 2. `QMenu` is a widget and can only have a widget parent. `TrayController` isn't a widget, so the menu has no parent and nothing else would delete it.
+> 3. `QString` holds Unicode text; `QByteArray` holds raw bytes with no encoding assumed.
+> </details>
+
+---
+
+## Lesson 9 — The event loop, timers, signals and slots
+
+**Files:** `src/app/main.cpp`, `src/core/SwapMonitor.cpp`
+
+### Concept: the event loop
+
+A GUI program spends most of its life waiting. The last line of `main()` is:
+
+```cpp
+return application.exec();
+```
+
+`exec()` runs the **event loop**, which is essentially:
+
+```text
+while (app is running) {
+    wait for the next event (mouse click, timer expired, OS notification...)
+    run the code that handles it
 }
 ```
 
-The timer uses Qt's main event loop. A separate background thread is not currently needed because reading one sysctl value is a very small operation.
+Everything after startup — timer ticks, menu clicks, alerts — happens *inside* this loop, one event at a time, on the **main thread**. Because handlers run one at a time, most of this app needs no locks.
 
-## 6. Qt signals and slots
+`setQuitOnLastWindowClosed(false)` is crucial for a tray app: by default Qt leaves the loop when the last window closes, which would kill the monitor when you close Settings.
 
-Signals and slots allow components to communicate without tightly coupling them.
-
-For example, `SwapMonitor` declares:
+### Timers
 
 ```cpp
-void sampleUpdated(const SwapInfo& info, AlertTier tier);
-void alertTriggered(AlertTier tier, const SwapInfo& info);
-void readFailed(const QString& message);
+// SwapMonitor constructor
+connect(&m_timer, &QTimer::timeout, this, &SwapMonitor::refreshNow);
 ```
 
-`main.cpp` connects those signals to UI behavior:
+A `QTimer` doesn't create a thread. It asks the event loop "wake me in N ms". When that time comes, the loop emits `timeout`, which calls `refreshNow()`. Reading one sysctl value or one small file takes microseconds, so doing it on the main thread doesn't freeze the UI. If it took seconds, we'd need a background thread.
+
+### Signals and slots
+
+A **signal** is an announcement ("a new sample arrived"). A **slot** is any function that should run when it's announced. `connect` links them:
 
 ```cpp
-QObject::connect(&monitor, &SwapMonitor::sampleUpdated,
-                 &tray, &TrayController::updateSample);
+// SwapMonitor.hpp
+signals:
+    void sampleUpdated(const SwapInfo& info, AlertTier tier);
+
+// SwapMonitor.cpp
+emit sampleUpdated(*info, evaluation.currentTier);
+
+// main.cpp
+QObject::connect(&monitor, &SwapMonitor::sampleUpdated, &tray, &TrayController::updateSample);
+QObject::connect(&monitor, &SwapMonitor::sampleUpdated, &statusDialog, &StatusDialog::updateSample);
 ```
 
-The monitor does not need to know that the UI uses `QSystemTrayIcon`. It only announces that a new sample exists.
+The monitor doesn't know the tray or dashboard exist. It just emits. `main.cpp` decides who listens. This is the **observer pattern**, and it's why you could add a new listener (say, a history graph) without touching `SwapMonitor`.
 
-This separation makes it possible to replace the tray UI, record samples, or add another observer without changing `SwapMonitor`.
+Remember from Lesson 8 that `emit sampleUpdated(...)` calls an ordinary function generated by moc. That function walks the list of connected slots and calls each one. When sender and receiver are on the same thread, the slots run immediately, before `emit` returns.
 
-## 7. Alert state machine
+### Lambdas as slots
 
-The central business logic lives in [`src/core/AlertEngine.cpp`](../src/core/AlertEngine.cpp).
-
-The engine receives only two pieces of information:
-
-- Current used swap in bytes
-- Monotonic elapsed time in milliseconds
-
-It first determines the current tier:
+`main.cpp` connects many signals to **lambdas** — inline unnamed functions:
 
 ```cpp
-if (usedBytes >= tier3Threshold)
-    return AlertTier::Tier3;
-if (usedBytes >= tier2Threshold)
-    return AlertTier::Tier2;
-if (usedBytes >= tier1Threshold)
-    return AlertTier::Tier1;
-return AlertTier::Normal;
+const auto showDashboard = [&] {
+    statusDialog.show();
+    statusDialog.raise();
+    statusDialog.activateWindow();
+};
+QObject::connect(&tray, &TrayController::dashboardRequested, &statusDialog, showDashboard);
 ```
 
-The default thresholds are 2 GB, 4 GB, and 8 GB.
+The `[&]` is the **capture list**: "this lambda may use local variables of the enclosing function by reference". It's safe here only because all those locals live until `main()` returns. Capturing locals by reference in a lambda that outlives them is one of the most common C++ crashes.
 
-### Armed state
+In `presentAlert`, the inner lambda uses `[&, tier, info]`: everything by reference, *except* `tier` and `info`, which are **copied**. They're copied because that callback may run later, after the outer lambda has returned and its parameters are gone.
 
-Each tier can be armed or disarmed. Once an alert fires, that tier is disarmed so the ten-second timer does not generate the same alert repeatedly.
+### When threads do appear
 
-### Direct escalation
+On macOS, Apple's notification APIs call you back **on a background thread**. Touching Qt widgets from there is not allowed. `MacNotificationService.mm → completeOnMain()` fixes this:
 
-If swap jumps directly from normal to Tier 3, the engine triggers Tier 3 and marks all lower tiers as handled:
+```cpp
+QMetaObject::invokeMethod(QCoreApplication::instance(), std::move(completion),
+    Qt::QueuedConnection);
+```
+
+`Qt::QueuedConnection` means "put this function on the main thread's event queue and run it there later". This is the standard way to move work back to the UI thread.
+
+---
+
+## Lesson 10 — The alert state machine
+
+**File:** `src/core/AlertEngine.cpp → evaluate()`
+
+This is the "brain" of the app, and it contains no OS code at all. It takes two numbers — used bytes and current time — and decides what to do.
+
+### Why not just `if (used > threshold) alert();`?
+
+Because the timer fires every 10 seconds. If swap sits above 4 GB for an hour, you'd get 360 identical alerts. And if usage hovers around 4.0 GB — 4.01, 3.99, 4.02 — you'd get an alert every time it crosses. The engine solves this with three ideas:
+
+| Idea | Rule | Solves |
+|---|---|---|
+| **Armed** | Each tier fires once, then is disarmed until re-armed | Repeating every tick |
+| **Hysteresis** | A tier re-arms (and the displayed tier drops) only after usage falls **15% below** its threshold | Flapping around a threshold |
+| **Cooldown** | Even if re-armed, a tier can't fire again within 15 minutes of its last alert | Rapid up-down-up cycles |
+
+It also has one more rule: if usage jumps straight from Normal to Tier 3, it fires **only Tier 3**, and marks Tiers 1 and 2 as already handled.
+
+### The state
+
+```cpp
+AlertTier m_currentTier = AlertTier::Normal;
+std::array<bool, 3>   m_armed {true, true, true};
+std::array<qint64, 3> m_lastTriggeredMs {-1, -1, -1};   // -1 = never fired
+```
+
+That's all the memory the engine has. A **state machine** is just: some state + a function that takes an input and the current state and produces an output and a new state.
+
+### Trace it by hand
+
+Let's use small numbers (the tests do this too): thresholds **100 / 200 / 300**, reset margin **15%** (so reset points are **85 / 170 / 255**), cooldown **60 s**.
+
+| Time | Used | What happens | Tier shown | Alert? | Armed [T1,T2,T3] |
+|---|---|---|---|---|---|
+| 0 s | 50 | Below everything | Normal | – | ✔ ✔ ✔ |
+| 10 s | 120 | Crossed 100, T1 armed, never fired | **T1** | 🔔 **T1** | ✘ ✔ ✔ |
+| 20 s | 95 | Below 100 but not below 85: hysteresis keeps T1 | T1 | – | ✘ ✔ ✔ |
+| 30 s | 80 | Below 85: T1 re-armed, display drops | Normal | – | ✔ ✔ ✔ |
+| 40 s | 120 | T1 armed, but only 30 s since last T1 alert | T1 | – (cooldown) | ✔ ✔ ✔ |
+| 80 s | 120 | 70 s since last T1 ≥ 60 s | T1 | 🔔 **T1** | ✘ ✔ ✔ |
+| 90 s | 350 | Jumped to T3. Fire T3, mark T1–T3 handled | **T3** | 🔔 **T3** | ✘ ✘ ✘ |
+| 100 s | 180 | Below 255 → T3 re-armed; not below 170 → display stays T2 | T2 | – | ✘ ✘ ✔ |
+| 110 s | 160 | Below 170 → T2 re-armed, display T1; T1 still disarmed | T1 | – | ✘ ✔ ✔ |
+
+Get a pen and verify a few rows against the code below. Being able to "run" code in your head like this is a core skill.
+
+### The code, piece by piece
+
+**Step 1 — re-arm any tier we've fallen far enough below:**
+
+```cpp
+for (int index = 0; index < 3; ++index) {
+    const auto tier = static_cast<AlertTier>(index + 1);
+    if (usedBytes < resetPointForTier(tier)) m_armed[index] = true;
+}
+```
+
+**Step 2 — decide the displayed tier, with hysteresis:**
+
+```cpp
+AlertTier AlertEngine::tierWithHysteresis(quint64 usedBytes) const
+{
+    const AlertTier rawTier = tierForUsage(usedBytes);    // plain threshold comparison
+    if (rawTier >= m_currentTier) return rawTier;         // going up: move immediately
+
+    AlertTier result = m_currentTier;                     // going down: step down one tier
+    while (result > rawTier && usedBytes < resetPointForTier(result))  // at a time, only
+        result = previous tier;                           // while below that tier's reset point
+    return result;
+}
+```
+
+(Simplified — the real code compares and steps down via `static_cast<int>`, since you can't do arithmetic like "tier − 1" on an `enum class`.) Going **up** is instant; going **down** is "sticky".
+
+**Step 3 — should we fire?**
+
+```cpp
+const bool cooldownElapsed = m_lastTriggeredMs[currentIndex] < 0
+    || nowMs - m_lastTriggeredMs[currentIndex] >= m_configuration.cooldownMs;
+if (!m_armed[currentIndex] || !cooldownElapsed)
+    return {m_currentTier, std::nullopt};                 // show tier, no alert
+```
+
+**Step 4 — fire, and mark this tier and all lower ones as handled:**
 
 ```cpp
 for (int index = 0; index <= currentIndex; ++index) {
     m_armed[index] = false;
     m_lastTriggeredMs[index] = nowMs;
 }
+return {m_currentTier, m_currentTier};                    // show tier, alert this tier
 ```
 
-This prevents three alerts from appearing at once.
+The function returns an `AlertEvaluation` struct with two parts: the tier to **display** and an `optional` tier to **alert**. Separating "what to show" from "whether to interrupt the user" keeps the tray accurate even when alerts are suppressed.
 
-### Hysteresis
+### Where snooze fits
 
-Without hysteresis, usage fluctuating around a threshold could repeatedly arm and trigger an alert.
+Snooze lives in `SwapMonitor`, not the engine. While snoozed, the engine still runs (so the tray stays accurate), but `SwapMonitor` simply doesn't `emit alertTriggered`. When the snooze ends, `SwapMonitor` calls `m_alertEngine.reset()` so you get reminded if swap is still high.
 
-The engine rearms a tier only when usage falls below a reset point:
+> **Check yourself**
+> 1. In the table at 20 s, usage is 95 (below the T1 threshold of 100). Why does the tray still show T1?
+> 2. Why does the engine receive the time as a parameter instead of reading a clock itself?
+>
+> <details><summary>Answers</summary>
+>
+> 1. Hysteresis: the displayed tier only drops once usage is below the reset point (85).
+> 2. So it is a pure function of its inputs: tests can pass any time they like, and the engine has no OS dependency.
+> </details>
+
+---
+
+## Lesson 11 — Talking to other programs: D-Bus and Apple frameworks
+
+The app needs to show notifications and learn when the computer sleeps. Neither is done by the kernel directly; they're provided by *other programs* (a notification daemon, the login manager). So the app needs **IPC** — inter-process communication.
+
+### Linux: D-Bus
+
+**D-Bus** is the standard message bus on Linux desktops. Programs register names on a bus; others call their methods and subscribe to their signals. There are two buses:
+
+- **System bus** — one per machine. Services like `org.freedesktop.login1` (systemd-logind: sleep, shutdown, sessions).
+- **Session bus** — one per logged-in user. Services like `org.freedesktop.Notifications` (your desktop's notification popups).
+
+> **Try it 🐧** — send a notification from the terminal, exactly like the app does:
+> ```bash
+> gdbus call --session \
+>   --dest org.freedesktop.Notifications \
+>   --object-path /org/freedesktop/Notifications \
+>   --method org.freedesktop.Notifications.Notify \
+>   "Swap Alert" 0 "" "Hello" "Sent over D-Bus" "[]" "{}" 5000
+> ```
+> Then compare with `LinuxNotificationService.cpp → send()`: same service, same path, same method, same eight arguments (app name, replaces-id, icon, title, body, actions, hints, timeout).
+
+> **Try it 🐧** — watch the sleep signal the app listens for:
+> ```bash
+> gdbus monitor --system --dest org.freedesktop.login1
+> # now suspend and wake your machine; look for PrepareForSleep (true) then (false)
+> ```
+
+In `LinuxSystemEventMonitor.cpp → start()`, the app subscribes to exactly that:
 
 ```cpp
-resetPoint = threshold * (1.0 - resetMargin);
+systemBus.connect("org.freedesktop.login1", "/org/freedesktop/login1",
+    "org.freedesktop.login1.Manager", "PrepareForSleep",
+    this, SLOT(prepareForSleep(bool)));
 ```
 
-The default reset margin is 15%. A 4 GB tier therefore rearms only after usage falls below approximately 3.4 GB.
+`prepareForSleep(true)` becomes `SystemEvent::WillSleep`; `false` becomes `DidWake`. Linux-specific D-Bus names never leave this file — the rest of the app only sees the portable `SystemEvent` enum.
 
-Hysteresis also stabilizes the displayed tier. If Tier 2 was reached, usage falling from 4.0 GB to 3.9 GB does not immediately turn the menu-bar indicator green. The current tier remains Tier 2 until usage crosses its reset point. This keeps the visible state consistent with the alert state.
+Note that `notifications.call(...)` is **synchronous**: the main thread waits for a reply. The `setTimeout(3000)` caps that wait at 3 seconds so a hung notification daemon can't freeze the app forever.
 
-### Cooldown
+### macOS: Objective-C++ and Apple frameworks
 
-Even if a tier has been rearmed, the configured cooldown must have elapsed:
+Apple's APIs (AppKit, UserNotifications, ServiceManagement) are written in **Objective-C**. A `.mm` file is **Objective-C++**: it can contain both C++ and Objective-C in the same function.
+
+A quick syntax decoder:
+
+| Objective-C | Meaning |
+|---|---|
+| `[object method]` | Call a method (a "message send") |
+| `[object method:arg1 other:arg2]` | Call with named arguments |
+| `object.property` | Read a property |
+| `@"text"` | An `NSString` literal |
+| `^(BOOL granted, NSError* error) { ... }` | A **block** — Objective-C's lambda |
+| `@interface Foo : NSObject <Protocol>` | Declare a class implementing a protocol (≈ interface) |
+
+Memory is managed by **ARC** (Automatic Reference Counting), enabled by `-fobjc-arc` in `CMakeLists.txt` — the compiler inserts retain/release calls for you, conceptually like `std::shared_ptr`.
+
+Reading `MacNotificationService.mm → send()` is a good exercise. The flow is:
+
+1. Ask for the current permission status (async; answer arrives in a block on a background thread).
+2. If never asked → request permission, then call `send()` again.
+3. If denied → report failure via the callback.
+4. If allowed → build a `UNMutableNotificationContent`, submit it, report the result.
+
+Every result goes through `completeOnMain()` (Lesson 9) so the C++ callback runs on Qt's main thread.
+
+`MacSystemEventMonitor.mm` subscribes to `NSWorkspaceWillSleepNotification` and friends, specifying `queue:[NSOperationQueue mainQueue]` so those callbacks already arrive on the main thread.
+
+### Converting strings across the boundary
+
+Each world has its own string type: `QString` (Qt), `NSString` (Apple), `const char*` (C). The helpers `toNSString()` / `fromNSString()` convert through UTF-8. Every boundary between libraries tends to need little adapters like these.
+
+---
+
+## Lesson 12 — Writing files safely
+
+### Atomic writes
+
+**File:** `src/platform/linux/LinuxAutostartService.cpp → setEnabled()`
+
+To start at login on Linux, the app writes a `.desktop` file into `~/.config/autostart/`. If the app crashed or the disk filled up halfway through writing, you'd be left with a corrupt file. So it uses `QSaveFile`:
 
 ```cpp
-nowMs - lastTriggeredMs >= cooldownMs
+QSaveFile file(path);
+if (!file.open(...) || file.write(desktopEntry) != desktopEntry.size() || !file.commit()) { ...error... }
 ```
 
-The default cooldown is 15 minutes.
+`QSaveFile` writes to a **temporary file** next to the target, and `commit()` **renames** it over the real file. On POSIX systems, `rename()` within one filesystem is **atomic**: other programs see either the whole old file or the whole new file, never a half-written one. This "write temp + rename" trick is the standard way to update files safely.
 
-### Why use monotonic time?
+Then `QFile::setPermissions(path, ReadOwner | WriteOwner)` sets mode `0600` (only you can read/write it), because an autostart file is something that runs code at login.
 
-The core depends on `IMonotonicClock` instead of directly reading a clock. On macOS, `MacContinuousClock` uses `mach_continuous_time`, which is monotonic and advances while the computer sleeps. Changing the wall clock or moving between time zones therefore does not break cooldown calculations, and sleeping does not artificially extend a snooze.
+> **Try it** — see permissions:
+> ```bash
+> ls -l ~/.config/autostart/ 2>/dev/null    # 🐧, after enabling Start at Login
+> # -rw------- = owner read/write only (0600)
+> ```
 
-Tests inject a fake clock so they can advance time instantly and deterministically.
+Also note `desktopExecQuote()`: it escapes `\ " \` $` in the executable path. The `Exec=` line is interpreted by a launcher, so an unescaped path containing `$` or a backtick could be misread. Any time you build text that another program will parse, escape it.
 
-## 8. Snoozing and pausing
+### Log rotation and a mutex
 
-Pausing monitoring stops the timer. Snoozing behaves differently: monitoring continues, and the tray still displays current usage, but new alert presentation is suppressed.
+**File:** `src/core/DiagnosticLogger.cpp`
 
-The monitor records the end of the snooze using elapsed time:
+`DiagnosticLogger::install()` calls `qInstallMessageHandler(messageHandler)`, so every `qCInfo(...)` / `qCWarning(...)` in the app goes through one function that writes a line to a log file.
 
-```cpp
-m_snoozedUntilMs =
-    m_clock->nowMs() + static_cast<qint64>(minutes) * 60 * 1000;
+- **Rotation:** when the file would exceed 1 MB, `rotateLogs()` renames `log.1 → log.2`, `log → log.1`, and starts fresh. Old logs can't grow forever.
+- **Mutex:** Qt may log from any thread (e.g. the Apple notification callbacks). Two threads writing the same file at once could interleave bytes. `QMutexLocker locker(&loggerMutex);` makes sure only one thread at a time runs that block — RAII again (Lesson 7).
+- **Sanitising:** newlines in messages are replaced with `\n` so one log record is always one line.
+
+**Logging categories** (`src/core/Logging.hpp`, e.g. `logMonitor`, `logProcesses`) tag each line so you can filter:
+
+```bash
+# 🐧 Logs live under ~/.local/share/SwapAlert/Swap Alert/logs/  (use "Open Logs Folder…" in the tray)
+grep '\[swapalert.processes\]' swap-alert.log
 ```
 
-When snooze expires, the alert engine is reset so it can remind the user if swap remains above a threshold.
+---
 
-The tray also offers an Until Next Login option. This keeps alerts snoozed for the lifetime of the current Swap Alert process; the normal launch-at-login lifecycle clears it at the next login.
+## Lesson 13 — Building and testing
 
-## 9. Menu-bar interface
-
-[`src/ui/TrayController.cpp`](../src/ui/TrayController.cpp) owns `QSystemTrayIcon` and its menu.
-
-The menu provides:
-
-- Current swap usage
-- Current alert tier
-- Open Dashboard
-- Refresh Now
-- Review Applications
-- Snooze for 15 minutes or one hour
-- Monitoring toggle
-- Settings
-- Quit
-
-The menu-bar icon is generated with `QPainter`. Its color represents the current tier:
-
-- Green: normal
-- Yellow: Tier 1
-- Orange: Tier 2
-- Red: Tier 3
-- Gray: monitoring error
-
-Every successful sample updates the menu and tooltip:
-
-```cpp
-const QString status = QStringLiteral("Swap: %1 of %2")
-    .arg(formatBytes(info.usedBytes), formatBytes(info.totalBytes));
-```
-
-[`packaging/macos/Info.plist.in`](../packaging/macos/Info.plist.in) sets `LSUIElement` to `true`. That makes Swap Alert a menu-bar utility without a normal Dock icon.
-
-When monitoring is paused, or a swap read fails, the tray changes to a gray icon and replaces stale status text with Paused or Unavailable. Resuming monitoring immediately takes a fresh sample.
-
-## 10. Live dashboard
-
-[`src/ui/StatusDialog.cpp`](../src/ui/StatusDialog.cpp) provides a larger live view without making the tray menu crowded. It shows:
-
-- Current used and total swap
-- A utilization progress bar
-- The hysteresis-stabilized alert tier
-- Monitoring, paused, or unavailable state
-- All three configured thresholds
-- Refresh, application review, and settings actions
-
-The dashboard is constructed at startup and connected to the same `sampleUpdated` and `readFailed` signals as the tray. It therefore stays current even while its window is hidden.
-
-## 11. Persistent settings
-
-[`src/core/SettingsStore.cpp`](../src/core/SettingsStore.cpp) uses `QSettings` to save preferences for the current user.
-
-Defaults are supplied when a value has not yet been stored:
-
-```cpp
-return m_settings.value(
-    "thresholds/tier1Bytes",
-    2ULL * gibibyte
-).toULongLong();
-```
-
-The stored values include:
-
-- Three thresholds
-- Polling interval
-- Alert cooldown
-- Monitoring enabled state
-
-When a setting changes, `SettingsStore` emits `changed()`. `SwapMonitor` receives that signal and updates its timer and alert configuration without restarting the application.
-
-## 12. Settings dialog
-
-[`src/ui/SettingsDialog.cpp`](../src/ui/SettingsDialog.cpp) builds a Qt form containing threshold, polling, cooldown, monitoring, and autostart controls.
-
-Before saving, the dialog validates that:
+### From source to running program
 
 ```text
-Tier 1 < Tier 2 < Tier 3
+ .cpp / .mm ──compile──▶ .o (object files) ──link──▶ executable
+   ▲                                          ▲
+   │ #include headers                         │ libraries: Qt6Core, AppKit.framework, ...
+   │ (preprocessor pastes text in)
 ```
 
-The Test Tier buttons emit simulated alert requests. They exercise notification and dialog presentation without changing real swap usage.
+- **Preprocessing** handles `#include`, `#define`, `#if`. In `main.cpp`, `#if defined(Q_OS_MACOS)` removes the Linux includes before the compiler even sees them.
+- **Compiling** turns each source file into machine code (`.o`), separately.
+- **Linking** stitches the `.o` files and libraries together and resolves "you called `sysctlbyname`, here's where it lives". "Undefined symbol" errors come from this step.
 
-Saving uses one batched `setConfiguration()` call, so the monitor receives one coherent update and performs at most one immediate refresh. Restore Defaults only edits the form; it does not persist anything until Save is pressed, so Cancel behaves as expected.
+### CMake
 
-## 13. Native notifications
+`CMakeLists.txt` is a recipe that generates the actual build commands. Things worth reading in it:
 
-[`src/platform/macos/MacNotificationService.mm`](../src/platform/macos/MacNotificationService.mm) uses Apple's UserNotifications framework.
+```cmake
+set(CMAKE_CXX_STANDARD 20)                     # use C++20
 
-At startup, it requests permission for alerts and sounds:
-
-```objc
-UNAuthorizationOptionAlert | UNAuthorizationOptionSound
+if(APPLE)
+    set(SWAP_ALERT_PLATFORM_SOURCES src/platform/macos/MacSwapReader.mm ...)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(SWAP_ALERT_PLATFORM_SOURCES src/platform/linux/LinuxSwapReader.cpp ...)
+endif()
 ```
 
-Sending an alert creates `UNMutableNotificationContent` and submits a local notification request:
+Only one OS's files are compiled. Together with the `#if` in `main.cpp`, this is how one codebase builds on two platforms.
 
-```objc
-UNNotificationRequest* request =
-    [UNNotificationRequest requestWithIdentifier:identifier
-                                          content:content
-                                          trigger:nil];
+```cmake
+target_link_libraries(SwapAlert PRIVATE "-framework AppKit" ...)   # macOS
+target_link_libraries(SwapAlert PRIVATE Qt6::DBus)                 # Linux
 ```
 
-A notification delegate permits banners to appear while Swap Alert is active. Tier 1 is silent; Tier 2 and Tier 3 use the default notification sound.
+These tell the linker which libraries to pull in.
 
-Notification operations are asynchronous and return a `NotificationResult`. The result reports both authorization state and delivery errors:
+> **Try it** — see the real compiler commands:
+> ```bash
+> cmake --build build --verbose 2>&1 | grep -m1 MacSwapReader   # or LinuxSwapReader
+> ```
+> Also open `build/compile_commands.json`: it records the exact command for every file. Editors use it for autocomplete.
 
-- `NotDetermined`: macOS has not asked the user yet
-- `Denied`: notifications are disabled for Swap Alert
-- `Authorized`: alerts may be delivered
-- `Unknown`: the service could not determine a usable state
+> **Try it** — see which libraries the binary depends on:
+> ```bash
+> ldd build/swap-alert | grep -i qt                          # 🐧
+> otool -L "build/Swap Alert.app/Contents/MacOS/Swap Alert"  # 🍎
+> ```
 
-Settings displays this state and offers either Request Permission or Open Settings. Sending a notification first checks authorization, requests it when necessary, and reports failures back on Qt's main thread.
+### Tests
 
-Tier 1 normally has no application window, so a denied permission or delivery error opens `WarningDialog` as a fallback. Tier 2 already has a warning window and adds the failure explanation there. Tier 3 always opens guided cleanup, so the critical action remains visible even without Notification Center.
+Tests are separate executables built from the same `core/` sources plus fakes:
 
-## 14. Alert presentation
-
-`main.cpp` decides how each triggered tier is presented:
-
-- Tier 1 sends a native notification.
-- Tier 2 sends a notification and shows `WarningDialog`.
-- Tier 3 sends a notification and opens `CleanupDialog`.
-
-The core `AlertEngine` does not know about any of these windows. It only returns an alert tier. Presentation policy remains in the application layer.
-
-## 15. Listing running applications
-
-[`src/platform/macos/MacProcessService.mm`](../src/platform/macos/MacProcessService.mm) uses `NSWorkspace` to enumerate visible macOS applications and `libproc` to snapshot the current user's processes.
-
-It excludes:
-
-- Swap Alert itself
-- Background-only applications
-- Applications that have already terminated
-- Core system applications such as Finder, Dock, loginwindow, and SystemUIServer
-- Applications not owned by the current user
-
-For each process, it calls `proc_pid_rusage` and reads `ri_phys_footprint` as an estimate of physical memory consumption.
-
-[`src/core/ProcessGrouping.cpp`](../src/core/ProcessGrouping.cpp) groups process snapshots under each visible application. A process belongs to an application when it is:
-
-- The visible application's main process
-- A current-user descendant of that process
-- A helper with the same bundle identifier or a bundle identifier beneath it
-- A descendant of one of those matching helpers
-
-Another visible application's root process is never absorbed into the parent group. Memory is summed for each group, process count is recorded, and the list is sorted from highest to lowest aggregate memory use.
-
-This remains an estimate because macOS applications can use unrelated services that cannot be attributed reliably, but browsers and Electron applications are represented more accurately than a main-process-only reading.
-
-## 16. Safe application cleanup
-
-[`src/ui/CleanupDialog.cpp`](../src/ui/CleanupDialog.cpp) presents the application list with checkboxes.
-
-There are two separate actions:
-
-- `Quit Selected` requests normal termination.
-- `Force Quit Selected` requires a prior normal quit request, requires the application to still be running, then asks for explicit confirmation.
-
-The native calls are:
-
-```objc
-application.terminate
-application.forceTerminate
-```
-
-The cleanup table preserves selection across refreshes, displays grouped process count and memory, and reports Quit requested, Still running, Force quit requested, or Failed. A delayed refresh gives macOS time to deliver the normal quit request.
-
-Before every termination request, the macOS adapter rechecks the process owner, activation policy, protected-application list, and Swap Alert's own PID. This protects against stale rows and PID reuse between listing and action.
-
-Swap Alert never automatically selects or terminates an application. Force quit is deliberately gated because it can destroy unsaved work.
-
-The app also requires no root privileges and cannot terminate another user's processes through this UI.
-
-## 17. Start at login
-
-[`src/platform/macos/MacAutostartService.mm`](../src/platform/macos/MacAutostartService.mm) uses `SMAppService.mainAppService`, available on macOS 13 and later.
-
-Enabling the preference registers the application. Disabling it unregisters the application.
-
-Start at login should be tested after placing the application in a stable location such as `/Applications`. Registering a temporary build path is not appropriate for a final installation.
-
-## 18. Automated tests
-
-[`tests/AlertEngineTests.cpp`](../tests/AlertEngineTests.cpp) uses Qt Test.
-
-The suite covers:
-
-- Remaining normal below Tier 1
-- Triggering each tier only once
-- Jumping directly to a higher tier
-- Rearming through hysteresis
-- Preventing immediate repeats through cooldown
-- Reading coherent swap values from macOS when the test environment permits it
-
-[`tests/SwapMonitorTests.cpp`](../tests/SwapMonitorTests.cpp) injects a fake swap reader and fake clock. It verifies:
-
-- Samples continue while alerts are snoozed
-- A timed snooze reminds the user after it expires
-- Until-next-login snooze does not expire with elapsed time
-- Failed swap reads do not evaluate or emit a sample
-- Pausing and resuming monitoring starts a fresh alert episode
-- Batched settings updates persist all values and emit one change signal
-
-[`tests/ProcessGroupingTests.cpp`](../tests/ProcessGroupingTests.cpp) verifies:
-
-- Descendant and bundle-helper aggregation
-- Exclusion of other users' processes
-- Separation of multiple visible application roots
-- Protection against similar but unrelated bundle identifiers
-- Aggregate-memory and name sorting
-
-[`tests/UiSafetyTests.cpp`](../tests/UiSafetyTests.cpp) uses fake platform services with real Qt dialogs. It verifies:
-
-- Denied notification permission offers a System Settings action
-- Requesting permission updates the Settings status
-- All three test-alert buttons emit the correct tier
-- Force Quit remains disabled until normal quit was requested and the application remains running
-
-The core tests use small values such as 100, 200, and 300 bytes. The unit itself does not matter to the state machine, which makes the cases easy to read.
-
-The macOS swap test may be skipped inside restricted execution sandboxes that deny access to `vm.swapusage`. Other read errors still fail the test.
-
-Run the tests with:
+| Test file | What it checks | Uses |
+|---|---|---|
+| `AlertEngineTests.cpp` | Every rule from Lesson 10; `/proc/meminfo` parsing | Plain numbers, temp files |
+| `SwapMonitorTests.cpp` | Snooze, pause/resume, read failures, sleep/wake | `FakeSwapReader`, `FakeClock` |
+| `ProcessGroupingTests.cpp` | The BFS grouping from Lesson 5 | Hand-built process lists |
+| `LinuxProcessServiceTests.cpp` | Linux process inventory | 🐧 only |
+| `UiSafetyTests.cpp` | Force Quit stays disabled until it should be; permission UI | Fake platform services + real dialogs |
 
 ```bash
 ctest --test-dir build --output-on-failure
 ```
 
-## 19. How Linux support fits later
+Read `tests/SwapMonitorTests.cpp → snoozeSuppressesAlertsButKeepsSampling()` alongside Lesson 10. It sets fake swap values, advances a fake clock, and uses `QSignalSpy` to count how many times each signal fired. Notice how readable the test is *because* of the interfaces from Lesson 6.
 
-The core alert logic and most Qt UI code do not depend on macOS. Linux support can be added by implementing the same interfaces:
+### Packaging (brief)
 
-```text
-MacSwapReader          → LinuxSwapReader using /proc/meminfo
-MacNotificationService → Linux D-Bus notification service
-MacProcessService      → Linux /proc process service
-MacAutostartService    → Linux XDG autostart service
-```
+`packaging/` turns the build into something installable: a signed `.dmg` on macOS, AppImage / Flatpak / `.deb` / `.rpm` on Linux. See [`RELEASING.md`](RELEASING.md). One interesting detail: inside Flatpak, the app runs in its own **PID namespace** — it literally can't see host processes in `/proc` — so `LinuxProcessService` disables cleanup when `FLATPAK_ID` is set.
 
-The alert engine, timer behavior, settings, and dialogs can remain shared.
+---
 
-The CMake configuration will eventually select the correct platform files using conditions such as:
+## Exercises
 
-```cmake
-if(APPLE)
-    # macOS sources
-elseif(UNIX)
-    # Linux sources
-endif()
-```
+Ordered from easiest to hardest. Each says which lessons it practises.
 
-## 20. Suggested learning exercises
+### Warm-up
 
-These changes are small enough to attempt while learning the codebase:
+1. **Add a 30-minute snooze** to the tray menu. *(L8, L9)* Find where the 15-minute action is created in `src/ui/TrayController.cpp` and follow the `snoozeRequested` signal to `main.cpp`.
+2. **Add a boundary test.** In `tests/AlertEngineTests.cpp`, test usage of *exactly* 100 and exactly 85 with thresholds 100/200/300. Predict the result first. *(L1, L10)*
+3. **Extend the Hello Qt program** from Lesson 8: add a "Reset" button that sets the counter back to 0, and a `QSpinBox` whose value sets how much each click adds. *(L8)*
+4. **Add a "Copy Status" item** to the tray menu that copies the current "Swap: X of Y" text to the clipboard (`QGuiApplication::clipboard()->setText(...)`). *(L8, L9)*
+5. **Print your own `/proc` reading.** Write a standalone C++ program (no Qt) that prints `SwapTotal` and `SwapFree` using `std::ifstream` and `std::getline`. *(L2)*
 
-1. Add a 30-minute snooze option to the tray menu.
-2. Add the current alert tier as text next to the swap value.
-3. Make the reset margin configurable in Settings.
-4. Add tests for exact threshold boundaries.
-5. Add a keyboard shortcut that opens the dashboard.
-6. Record the last 60 readings and display a small history table.
-7. Extend the fake-reader monitor tests to cover live threshold changes.
-8. Add application icons to the guided cleanup table.
-9. Add `LinuxSwapReader` while keeping all existing core tests unchanged.
+### Core
 
-## 21. Good next architectural improvements
+6. **Make the reset margin configurable** in the Settings dialog. Follow how `cooldownMinutes` flows from `SettingsDialog` → `SettingsStore` → `AlertEngine::Configuration`. *(L6, L9, L10)*
+7. **Keep a history.** Create a `SwapHistory` class in `core/` that stores the last 60 `SwapInfo` samples (use a fixed-size `std::array` as a ring buffer). Connect it to `sampleUpdated`. Write a test for it. *(L1, L7, L9)*
+8. **Write a test** that changes thresholds while monitoring is running and checks that the next sample uses the new ones. *(L6, L13)*
 
-As the project grows, consider:
+### Systems
 
-- Structured logging with `QLoggingCategory` or Apple `OSLog`
-- Notification categories with actions such as Open Dashboard and Snooze
-- Process grouping for browsers and Electron applications
-- A short swap-history model separated from the UI
-- CMake presets for debug, release, and CI builds
-- Packaging with `macdeployqt`, signing, notarization, and DMG creation
+9. **`strace` the app.** 🐧 Run `strace -f -e trace=openat,kill,clock_gettime ./build/swap-alert` and identify each syscall from this guide. Why does `clock_gettime` probably *not* show up even though it's called? (Hint: look up **vDSO**.) *(L2, L4, L5)*
+10. **Show swap-in/swap-out rate**, not just total. 🐧 `/proc/vmstat` has `pswpin` / `pswpout` counters; 🍎 run `vm_stat` to see `Swapins` / `Swapouts`, then read them in code with `host_statistics64(..., HOST_VM_INFO64, ...)` (fields `swapins` / `swapouts` of `vm_statistics64`). You'll need to compute the *difference* between two samples. Add it to `SwapInfo` and both readers. *(L2, L3, L6)*
+11. **Close the PID-reuse window.** 🐧 Replace `kill()` in `LinuxProcessService::terminate()` with `pidfd_open()` + `pidfd_send_signal()` (Linux ≥ 5.3). Read `man 2 pidfd_open` and explain in a comment why this is safer. *(L5)*
 
-The current design intentionally keeps those concerns out of the first MVP while leaving clear places to add them.
+### Stretch
+
+12. **Add a third platform stub.** Create `platform/freebsd/` with a `FreeBsdSwapReader` that uses `sysctl` (FreeBSD has `vm.swap_info`). You don't need FreeBSD to get the structure right — the goal is to see how few files must change. *(L6, L13)*
+
+---
+
+## Glossary
+
+| Term | Meaning |
+|---|---|
+| **ABI / API** | API: the functions you call in source code. ABI: how compiled code calls them (binary layout). |
+| **Atomic** | Happens all at once or not at all; nobody can observe a half-done state. |
+| **D-Bus** | Linux message bus for inter-process communication. |
+| **errno** | Global variable where C system functions store the reason for their last failure. |
+| **Event loop** | The loop that waits for events and dispatches them to handlers. |
+| **File descriptor** | Small integer the kernel gives you to refer to an open file/socket. |
+| **Hysteresis** | Using different thresholds for going up vs coming down, to prevent flapping. |
+| **Monotonic clock** | A clock that never goes backwards. |
+| **moc** | Qt's code generator that implements signals/slots. |
+| **Page** | Fixed-size chunk of memory the OS moves between RAM and swap. |
+| **PID / PPID / UID** | Process ID / parent's process ID / owning user's ID. |
+| **RAII** | Tying resource cleanup to an object's destructor. |
+| **RSS / footprint** | Memory of a process currently in physical RAM. |
+| **Signal (Unix)** | Kernel notification sent to a process, e.g. `SIGTERM`, `SIGKILL`. |
+| **Signal (Qt)** | An event a `QObject` emits, delivered to connected slots. Unrelated to Unix signals despite the name. |
+| **Syscall** | A request from a program to the kernel. |
+| **TOCTOU** | Time-of-check to time-of-use race: the world changes between checking and acting. |
+| **vtable** | Hidden table of function pointers that makes `virtual` calls work. |
+
+---
+
+## Further reading
+
+**Man pages** (run `man <section> <name>`, e.g. `man 5 proc`):
+
+- 🐧 `proc(5)` — everything in `/proc`
+- 🐧 `clock_gettime(2)` — all the Linux clocks
+- `kill(2)`, 🐧 `signal(7)` / 🍎 `signal(3)` — signals
+- 🐧 `credentials(7)` — PIDs, UIDs, process groups
+- 🍎 `sysctl(3)`, `sysctl(8)` — macOS kernel values
+- `rename(2)` — why rename is atomic
+
+**Books and sites**
+
+- *The Linux Programming Interface* — Michael Kerrisk. The reference for Linux/Unix system calls; chapters on processes, signals, `/proc`, and timers map directly onto Lessons 2–5.
+- *A Tour of C++* — Bjarne Stroustrup. Short, modern overview of the C++ in Lessons 1, 6 and 7.
+- [cppreference.com](https://en.cppreference.com) — look up any standard library type (`std::optional`, `std::unique_ptr`…).
+- Qt documentation, in this order: [Object Trees & Ownership](https://doc.qt.io/qt-6/objecttrees.html), [Signals & Slots](https://doc.qt.io/qt-6/signalsandslots.html), [The Meta-Object System](https://doc.qt.io/qt-6/metaobjects.html), [Layout Management](https://doc.qt.io/qt-6/layout.html), [Implicit Sharing](https://doc.qt.io/qt-6/implicit-sharing.html), [The Event System](https://doc.qt.io/qt-6/eventsandfilters.html), and the [Qt Test tutorial](https://doc.qt.io/qt-6/qttestlib-tutorial1-example.html).
+- [freedesktop.org Desktop Notifications spec](https://specifications.freedesktop.org/notification-spec/latest/) — the D-Bus API used in Lesson 11.
+- *Mac OS X Internals* — Amit Singh. Older but still the best explanation of Mach, the XNU kernel and `sysctl`.

@@ -38,7 +38,7 @@ Reproducible AppImage and Flatpak packaging workflows are included under `packag
 
 ## Learning documentation
 
-See [docs/CODE_WALKTHROUGH.md](docs/CODE_WALKTHROUGH.md) for a guided explanation of the architecture, runtime flow, Qt concepts, native macOS integrations, tests, and suggested exercises.
+See [docs/CODE_WALKTHROUGH.md](docs/CODE_WALKTHROUGH.md) for a beginner-friendly, lesson-by-lesson guide to the C++, Qt, Linux/macOS system calls, and architecture behind this app, with hands-on terminal exercises.
 
 ## Safety
 
