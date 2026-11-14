@@ -3,9 +3,10 @@
 #include "core/Logging.hpp"
 
 #include <QDBusConnection>
-#include <QDBusInterface>
+#include <QDBusMessage>
 #include <QDBusObjectPath>
-#include <QDBusReply>
+#include <QDBusPendingCallWatcher>
+#include <QDBusPendingReply>
 #include <QDBusServiceWatcher>
 #include <QVariantMap>
 #include <utility>
@@ -38,22 +39,30 @@ public:
                 QStringLiteral("org.freedesktop.login1.Manager"),
                 QStringLiteral("PrepareForShutdown"), this, SLOT(prepareForShutdown(bool)));
 
-            QDBusInterface manager(QStringLiteral("org.freedesktop.login1"),
-                QStringLiteral("/org/freedesktop/login1"),
-                QStringLiteral("org.freedesktop.login1.Manager"), systemBus);
-            manager.setTimeout(3000);
-            const QDBusReply<QDBusObjectPath> session = manager.call(
-                QStringLiteral("GetSessionByPID"), static_cast<uint>(getpid()));
-            if (session.isValid()) {
-                sessionPath = session.value().path();
-                systemBus.connect(QStringLiteral("org.freedesktop.login1"), sessionPath,
-                    QStringLiteral("org.freedesktop.DBus.Properties"),
-                    QStringLiteral("PropertiesChanged"), this,
-                    SLOT(propertiesChanged(QString,QVariantMap,QStringList)));
-            } else {
-                qCWarning(logSystem) << "Unable to monitor login session:"
-                                     << session.error().message();
-            }
+            // Asynchronous, so a slow logind can't delay startup.
+            QDBusMessage request = QDBusMessage::createMethodCall(
+                QStringLiteral("org.freedesktop.login1"), QStringLiteral("/org/freedesktop/login1"),
+                QStringLiteral("org.freedesktop.login1.Manager"), QStringLiteral("GetSessionByPID"));
+            request << static_cast<uint>(getpid());
+            auto* watcher = new QDBusPendingCallWatcher(systemBus.asyncCall(request, 3000), this);
+            connect(watcher, &QDBusPendingCallWatcher::finished, this,
+                [this, generation = startGeneration](QDBusPendingCallWatcher* call) {
+                    call->deleteLater();
+                    if (generation != startGeneration) {
+                        return; // stop() or a newer start() ran while we waited
+                    }
+                    const QDBusPendingReply<QDBusObjectPath> session = *call;
+                    if (session.isError()) {
+                        qCWarning(logSystem) << "Unable to monitor login session:"
+                                             << session.error().message();
+                        return;
+                    }
+                    sessionPath = session.value().path();
+                    QDBusConnection::systemBus().connect(QStringLiteral("org.freedesktop.login1"),
+                        sessionPath, QStringLiteral("org.freedesktop.DBus.Properties"),
+                        QStringLiteral("PropertiesChanged"), this,
+                        SLOT(propertiesChanged(QString,QVariantMap,QStringList)));
+                });
         } else {
             qCWarning(logSystem) << "System D-Bus is unavailable; sleep events will not be monitored";
         }
@@ -83,6 +92,7 @@ public:
         watcher.removeWatchedService(QStringLiteral("org.kde.StatusNotifierWatcher"));
         sessionPath.clear();
         callback = {};
+        ++startGeneration;
     }
 
 private slots:
@@ -120,6 +130,7 @@ private:
 
     SystemEventCallback callback;
     QString sessionPath;
+    quint64 startGeneration = 0;
     QDBusServiceWatcher watcher;
 };
 

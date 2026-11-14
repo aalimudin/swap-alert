@@ -219,7 +219,7 @@ swap-alert/
 
 ### Milestone 1 — Monitoring core
 
-**Status: complete for macOS and Linux.**
+**Status: complete for macOS and Linux, except the in-memory swap history (not implemented yet; see [Known gaps](#known-gaps)).**
 
 - Create the CMake and Qt project skeleton.
 - Define platform service interfaces.
@@ -281,12 +281,24 @@ swap-alert/
 - Verify installation and desktop integration on both Fedora and Ubuntu.
 - Document installation, permissions, configuration, and troubleshooting.
 
+## Known gaps
+
+These items are specified above but not implemented yet. Step-by-step guides for building them are in [docs/PROJECTS.md](docs/PROJECTS.md).
+
+- Short in-memory swap history (`SwapHistory`) and "recent swap growth" in the Tier 2 warning window.
+- Reset margin is stored in settings but cannot be changed from the Settings window.
+- Swap activity (pages swapped in/out per second) is not read or shown.
+- Linux termination uses `kill()` after re-verification; `pidfd` would remove the remaining PID-reuse window.
+- The tray icon shows the tier by colour only, which colour-blind users cannot distinguish.
+- Settings window: force-quit availability setting.
+- Cleanup window: application icons and a snooze action.
+
 ## Testing strategy
 
 - Unit-test the alert state machine independently of the OS.
 - Inject fake swap readers and clocks for deterministic threshold, cooldown, and snooze tests.
 - Test native adapters separately on macOS and Linux.
-- Run CI builds and tests on macOS, Ubuntu, and Fedora.
+- Run CI builds and tests on macOS, Ubuntu, and Fedora, plus an Ubuntu Debug build with AddressSanitizer, UndefinedBehaviorSanitizer, and warnings treated as errors.
 - Manually test GNOME and KDE notification and tray behavior.
 - Test sleep/wake, login startup, notification denial, desktop restart, and rapid threshold changes.
 - Test applications that refuse to quit and applications with unsaved work.
