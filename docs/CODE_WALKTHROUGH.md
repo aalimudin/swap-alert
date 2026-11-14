@@ -8,7 +8,7 @@ You do not need to know C++ already. You should be comfortable with *some* progr
 
 ## How to use this guide
 
-- **Read the lessons in order.** Each one builds on the previous one. Lesson 1 gives you just enough C++ to read the code, 2–5 are about the operating system, 6–7 go deeper into C++ design, 8–9 are about Qt, and 10–13 put it all together.
+- **Read the lessons in order.** Each one builds on the previous one. Lesson 1 gives you just enough C++ to read the code, 2–5 are about the operating system, 6–7 go deeper into C++ design, 8–9 are about Qt, and 10–13 put it all together. Lesson 14 teaches you to debug. Do the Setup section before Lesson 1.
 - **Keep the source open next to this guide.** File paths are given as `src/core/AlertEngine.cpp → evaluate()`. Read the real file, not just the excerpt here.
 - **Do the "Try it" boxes.** They take a minute each and are where most of the learning happens.
 - **Answer the "Check yourself" questions before moving on.** Answers are hidden under a fold.
@@ -18,7 +18,8 @@ You do not need to know C++ already. You should be comfortable with *some* progr
 
 | # | Lesson | You will learn |
 |---|--------|----------------|
-| 0 | [The big picture](#lesson-0--the-big-picture) | What swap is, what the app does, how data flows |
+| 0 | [The big picture](#lesson-0--the-big-picture) | Virtual memory, what swap is (and how it differs per OS), how data flows through the app |
+| — | [Setup](#setup--build-run-and-test-the-app) | Build, run and test the app; the edit → build → run loop |
 | 1 | [C++ building blocks](#lesson-1--c-building-blocks-in-this-codebase) | Headers, `struct`, `enum class`, `const`, references, `std::optional` |
 | 2 | [Reading swap on Linux](#lesson-2--reading-swap-on-linux-proc) | `/proc`, "everything is a file", defensive parsing |
 | 3 | [Reading swap on macOS](#lesson-3--reading-swap-on-macos-sysctl) | System calls, `sysctl`, `errno` |
@@ -32,6 +33,7 @@ You do not need to know C++ already. You should be comfortable with *some* progr
 | 11 | [Talking to other programs](#lesson-11--talking-to-other-programs-d-bus-and-apple-frameworks) | D-Bus on Linux, Objective-C++ on macOS, callbacks across threads |
 | 12 | [Writing files safely](#lesson-12--writing-files-safely) | Atomic writes, log rotation, mutexes |
 | 13 | [Building and testing](#lesson-13--building-and-testing) | Compiling vs linking, CMake, the preprocessor, unit tests |
+| 14 | [Debugging and catching bugs](#lesson-14--debugging-and-catching-bugs) | Logging rules, lldb/gdb, sanitizers, compiler warnings, clang-tidy |
 | — | [Exercises](#exercises) · [Glossary](#glossary) · [Further reading](#further-reading) | |
 
 ---
@@ -45,6 +47,67 @@ Your computer's RAM is fast but limited. When programs ask for more memory than 
 Each chunk is a **page** (usually 4 KiB on Linux, 16 KiB on Apple Silicon). Moving pages to and from disk is thousands of times slower than RAM, so a computer that is swapping heavily feels sluggish. A little swap is normal. A lot of swap means you are running out of memory.
 
 Swap Alert watches how much swap is in use and warns you before things get bad.
+
+### How memory really works: virtual memory in 3 minutes
+
+That description is the simple version. Here's what's actually going on.
+
+**Every process gets its own fake address space.** When a program reads address `0x7ff3a000`, that isn't a location in a RAM chip. It's a **virtual address**. The CPU and the OS keep a **page table** for each process that maps its virtual pages to real **physical** pages of RAM. Two programs can both use address `0x7ff3a000` and see completely different data.
+
+**A page doesn't have to be in RAM.** A page-table entry can say "this page is not present right now". When the program touches it, the CPU stops and asks the kernel to deal with it. That's a **page fault**. The kernel finds the data, puts it in a free physical page, fixes up the page table, and lets the program continue as if nothing happened. The program never knows.
+
+**Not all memory goes to swap.** There are two kinds of pages:
+
+| Kind | Examples | When RAM is tight, the kernel… |
+|---|---|---|
+| **File-backed** | The program's own code, shared libraries, memory-mapped files | Just drops the page. It can re-read it from the original file later. |
+| **Anonymous** | The heap (`new`, `malloc`), the stack | Has nowhere to re-read it from, so it must **write it to swap** first. |
+
+So "swap used" measures anonymous memory that was pushed out of RAM. It's also why the cleanup window measures **RSS** / **footprint** (pages currently in RAM, Lesson 5) rather than the much bigger "virtual size" you see in `top`. Virtual size counts every page a process *could* touch, including ones that were never used.
+
+> **Try it** — watch swap traffic live (both OSes):
+> ```bash
+> vmstat 1          # 🐧: the si / so columns are pages swapped in / out per second
+> vm_stat 1         # 🍎: watch the Swapins / Swapouts columns
+> ```
+> Then open lots of browser tabs. If the numbers climb, you're watching page faults being served from swap.
+
+### Swap isn't the same on every OS
+
+Swap Alert reads one number, "swap used", on both OSes. But that number means different things depending on how the OS handles memory pressure.
+
+**🍎 macOS compresses first.** Before writing anything to disk, macOS squeezes inactive pages and keeps the compressed copies in RAM (the **memory compressor**). Only when that isn't enough does it write to swap files, which it creates and grows on demand. So on a Mac:
+
+- "Total swap" isn't fixed. It grows (and shrinks) as macOS adds swap files. That's why `xsu_total` changes over time.
+- By the time swap is in use, the compressor is already working hard. Swap on a Mac is a later warning sign than on a typical Linux machine.
+
+> **Try it 🍎**
+> ```bash
+> ls -lh /System/Volumes/VM/             # the swap files themselves
+> vm_stat | grep -E "compressor|Swap"    # compressed pages, swap-ins, swap-outs
+> memory_pressure                        # the OS's own summary of how tight memory is
+> ```
+
+**🐧 Linux depends on the setup.** Swap is a fixed-size partition or file that an administrator enabled. But some systems use RAM-based swap:
+
+- **zram** — a compressed RAM disk used as swap. Fedora enables it by default. Here, "4 GB of swap used" may mean about 1–2 GB of RAM holding compressed data, with no disk involved, which is much less painful than disk swap.
+- **zswap** — a compressed cache in RAM sitting in front of a normal disk swap.
+
+> **Try it 🐧**
+> ```bash
+> swapon --show                          # what swap devices exist? /dev/zram0 means zram
+> cat /proc/sys/vm/swappiness            # how eagerly the kernel swaps (0–200, default 60)
+> cat /sys/module/zswap/parameters/enabled   # Y if zswap is on
+> cat /proc/pressure/memory              # % of time tasks were stalled waiting for memory
+> ```
+
+**What this means for the app.** "Swap used" is a reasonable, portable signal, but not a perfect one:
+
+- **Swap usage stays high after the pressure is gone.** The kernel doesn't proactively read pages back in. A machine can show 3 GB of swap used and be perfectly snappy, because nothing is touching those pages.
+- **Swap *activity* (pages in/out per second) is a better sign of slowness** than the total. That's Exercise 10.
+- Linux has a direct measure of "are programs waiting on memory": **PSI** (`/proc/pressure/memory`). macOS has its memory-pressure level. A future version of the app could use these instead of or alongside swap totals.
+
+Keep this in mind when you read the alert engine in Lesson 10. Its thresholds are in bytes of swap, and the defaults (2 / 4 / 8 GB) are a judgement call, not a law.
 
 ### What the app does, in one paragraph
 
@@ -101,6 +164,99 @@ You'll see a lot of names starting with `Q` before Qt gets its own lesson (Lesso
 | `"%1 of %2".arg(a, b)` | String formatting: fills in `%1`, `%2` |
 | `QTimer`, `QDialog`, `emit`, `connect(...)` | Timers, windows, signals — covered in Lessons 8–9 |
 | `qCInfo(logMonitor) << ...` | Writes a log line |
+
+---
+
+## Setup — Build, run and test the app
+
+Do this once before Lesson 1. Several "Try it" boxes need a built copy of the app, and seeing it run makes the code much easier to follow.
+
+### 1. Install the tools
+
+| Tool | Job |
+|---|---|
+| A C++ compiler | Turns `.cpp` into machine code. Clang on macOS, GCC or Clang on Linux. |
+| CMake | Reads `CMakeLists.txt` and generates build instructions (Lesson 13). |
+| Ninja | Runs those build instructions quickly. |
+| Qt 6.5+ | The library the app is built on (Lesson 8). |
+
+```bash
+# 🍎 (installs Apple's compiler first if needed)
+xcode-select --install
+brew install qt cmake ninja
+
+# 🐧 Fedora
+sudo dnf install gcc-c++ cmake ninja-build qt6-qtbase-devel qt6-qttools-devel
+# 🐧 Ubuntu/Debian: see the package list in PLAN.md
+```
+
+### 2. Configure and build
+
+```bash
+cd swap-alert
+
+# 🍎
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+
+# 🐧 (Qt is found automatically)
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+# both
+cmake --build build
+```
+
+What the options mean:
+
+- `-S .` — the source is here. `-B build` — put all generated files in `build/`, so the source tree stays clean.
+- `-DCMAKE_BUILD_TYPE=Debug` — no optimisation, plus debug symbols. You need this for the debugger in Lesson 14.
+- `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON` — writes `build/compile_commands.json`, which editors such as VS Code and CLion use for autocomplete and go-to-definition.
+
+The first configure may print `Could NOT find WrapVulkanHeaders`. That's harmless; the app doesn't use Vulkan.
+
+### 3. Run it
+
+```bash
+open "build/Swap Alert.app"                     # 🍎: look in the menu bar
+./build/swap-alert                              # 🐧: look in the system tray
+```
+
+Running it **from a terminal** is more educational, because you see the log lines as they happen:
+
+```bash
+"build/Swap Alert.app/Contents/MacOS/Swap Alert"   # 🍎
+./build/swap-alert                                 # 🐧
+```
+
+You'll see `swapalert.monitor` lines every 10 seconds. Open **Settings…** and press **Test Tier 2** to see an alert without needing real memory pressure. Press `Ctrl+C` in the terminal to quit.
+
+> **No tray icon on 🐧 GNOME?** GNOME hides tray icons by default. Install the "AppIndicator and KStatusNotifierItem Support" extension.
+
+### 4. Run the tests
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
+Every test should pass. You can also run one test executable directly, or even one test function, which is handy later:
+
+```bash
+./build/SwapAlertTests                         # all alert-engine tests
+./build/SwapAlertTests hysteresisRearmsTier    # just one
+```
+
+### The edit → build → run loop
+
+From now on, your loop is:
+
+```bash
+cmake --build build && ctest --test-dir build      # after every change
+```
+
+You only need to re-run the long `cmake -S . -B build ...` command if you add or remove source files or change `CMakeLists.txt`.
+
+> **Try it** — make your first change. In `src/ui/TrayController.cpp`, change `"15 Minutes"` to `"15 Minutes (quick)"`. Rebuild, run, open the tray menu. Then change it back.
 
 ---
 
@@ -1483,7 +1639,7 @@ These tell the linker which libraries to pull in.
 > ```bash
 > cmake --build build --verbose 2>&1 | grep -m1 MacSwapReader   # or LinuxSwapReader
 > ```
-> Also open `build/compile_commands.json`: it records the exact command for every file. Editors use it for autocomplete.
+> Also open `build/compile_commands.json` (created by the `CMAKE_EXPORT_COMPILE_COMMANDS` option from Setup): it records the exact command for every file. Editors use it for autocomplete.
 
 > **Try it** — see which libraries the binary depends on:
 > ```bash
@@ -1515,7 +1671,173 @@ Read `tests/SwapMonitorTests.cpp → snoozeSuppressesAlertsButKeepsSampling()` a
 
 ---
 
+## Lesson 14 — Debugging and catching bugs
+
+So far you've read working code. This lesson is about what to do when code *doesn't* work: how to look inside a running program, and how to make the compiler and runtime catch bugs for you.
+
+### Tool 1: log lines
+
+The cheapest debugger is the log you already have. Every `qCInfo(logMonitor) << ...` line in the code prints when you run the app from a terminal (see Setup). Qt lets you turn categories on and off **without recompiling**, using an environment variable:
+
+```bash
+# hide the per-sample monitor spam, keep everything else
+QT_LOGGING_RULES="swapalert.monitor.debug=false" ./build/swap-alert
+
+# only show process-related lines
+QT_LOGGING_RULES="*=false;swapalert.processes.*=true" ./build/swap-alert
+```
+
+(On 🍎 use `"build/Swap Alert.app/Contents/MacOS/Swap Alert"` instead of `./build/swap-alert`.)
+
+Adding a temporary `qCDebug(logMonitor) << "here" << someValue;` is a perfectly good way to debug. Just remove it afterwards.
+
+### Tool 2: a debugger
+
+A **debugger** runs your program under its control. You can pause it at any line, look at every variable, and step through one line at a time. macOS uses **lldb**; Linux usually uses **gdb** (lldb also works there). Both need a **Debug** build (Setup step 2), because optimised builds rearrange and remove code, so the lines and variables no longer match what you wrote.
+
+The easiest place to start is a **test**, not the app: it runs the same code every time and finishes on its own. Let's watch the alert engine from Lesson 10 make its decisions:
+
+```bash
+lldb ./build/SwapAlertTests -- hysteresisRearmsTier         # 🍎 (or 🐧 if you prefer lldb)
+gdb --args ./build/SwapAlertTests hysteresisRearmsTier      # 🐧
+```
+
+Then type these commands at the `(lldb)` or `(gdb)` prompt:
+
+| What you want | lldb | gdb |
+|---|---|---|
+| Stop whenever a function is called | `b AlertEngine::evaluate` | `break AlertEngine::evaluate` |
+| Start the program | `run` | `run` |
+| Show the arguments and local variables | `frame variable` | `info args` then `info locals` |
+| Print any expression | `p usedBytes`, `p m_armed` | `p usedBytes`, `p m_armed` |
+| Who called this? (the call stack) | `bt` | `bt` |
+| Run one line, stepping *over* calls | `n` | `next` |
+| Run one line, stepping *into* calls | `s` | `step` |
+| Run until this function returns | `finish` | `finish` |
+| Keep going until the next breakpoint | `c` | `continue` |
+| Stop when a variable changes (while stopped inside `evaluate`) | `watchpoint set expression -- &m_currentTier` | `watch m_currentTier` |
+| Quit | `q` | `q` |
+
+> **Try it** — trace the hysteresis test by hand, then check yourself with the debugger.
+> 1. Open `tests/AlertEngineTests.cpp → hysteresisRearmsTier()`. Write down the `usedBytes` of each `evaluate(...)` call and what you expect `m_currentTier` and `m_armed` to be *after* each one.
+> 2. Run the test under the debugger with a breakpoint on `AlertEngine::evaluate`.
+> 3. At each stop, `p usedBytes` and `p m_armed`. Then type `finish` to return to the test function and `p engine.m_armed` to see the state *after* the call (the debugger can read private members). Did each call do what you predicted?
+>
+> Being able to predict what code will do, then check the prediction, is the most useful debugging skill there is.
+
+> **Try it** — see the event loop from Lesson 9 in a real call stack. Debug the full app and break on the timer slot:
+> ```bash
+> lldb "build/Swap Alert.app/Contents/MacOS/Swap Alert"   # 🍎
+> gdb ./build/swap-alert                                  # 🐧
+> ```
+> Set a breakpoint on `SwapMonitor::refreshNow`, `run`, and wait up to 10 seconds. When it stops, type `bt`. Reading from the bottom up you'll see `main` → `QCoreApplication::exec` → … timer event … → `QTimer::timeout` → `SwapMonitor::refreshNow`. That's the event loop, the timer and the signal/slot connection, all in one picture.
+
+Debuggers show C++ standard types (`std::array`, `std::optional`) nicely. Qt types like `QString` may show raw internals instead of the text. Qt Creator and the VS Code Qt extensions add "pretty printers" that fix this.
+
+### Tool 3: sanitizers — let the computer find memory bugs
+
+C++ has **undefined behaviour** (UB): things like reading freed memory, writing past the end of an array, or overflowing a signed integer. The language doesn't define what happens. The program might crash, might print garbage, or, worst of all, might *seem* to work. That's why C++ bugs can hide for years.
+
+**Sanitizers** are compiler options that add checks to your program, so UB is reported the moment it happens, with the exact line:
+
+- **AddressSanitizer (ASan)** — use-after-free, out-of-bounds reads and writes, double delete, memory leaks (leak detection is Linux-only by default).
+- **UndefinedBehaviorSanitizer (UBSan)** — signed overflow, invalid casts, misaligned pointers, and more.
+
+> **Try it** — meet both on purpose. Save this as `bug.cpp` outside the repo:
+> ```cpp
+> #include <climits>
+> #include <cstdio>
+> #include <memory>
+>
+> int main(int argc, char**)
+> {
+>     int big = INT_MAX;
+>     big += argc;                        // signed overflow: undefined behaviour
+>     std::printf("big = %d\n", big);
+>
+>     auto owner = std::make_unique<int>(42);
+>     int* borrowed = owner.get();        // non-owning pointer (Lesson 7)
+>     owner.reset();                      // the int is deleted here
+>     std::printf("%d\n", *borrowed);     // use-after-free
+> }
+> ```
+> ```bash
+> c++ -std=c++20 -g bug.cpp -o bug && ./bug          # no checks: probably "works"
+> c++ -std=c++20 -g -fsanitize=address,undefined bug.cpp -o bug && ./bug
+> ```
+> Without sanitizers it likely prints a negative number and then `42` or some garbage number, and exits as if nothing were wrong. With them you get `runtime error: signed integer overflow` and then a `heap-use-after-free` report showing **where the memory was freed** and **where it was used afterwards**. This is exactly the kind of bug the "borrowed pointer" pattern in Lesson 7 can cause if the owner dies first.
+
+Now build the whole project with sanitizers, in a separate build folder so your normal build stays fast:
+
+```bash
+cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" \
+  -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+  -DCMAKE_OBJCXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+  -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+cmake --build build-asan
+ctest --test-dir build-asan --output-on-failure
+```
+
+(On 🐧 drop the `CMAKE_PREFIX_PATH` line; the `OBJCXX` line is only used on macOS and is harmless elsewhere.)
+
+The tests should still pass. If ASan reports leaks that come from inside Qt or system libraries on Linux rather than from `src/`, that's noise from libraries that intentionally keep memory until exit. Silence leak checking with `ASAN_OPTIONS=detect_leaks=0` and focus on reports that point into this repo.
+
+Sanitized programs run about 2× slower and use more memory, so they're for development and tests, not for releases.
+
+### Tool 4: compiler warnings and static analysis
+
+The compiler can spot many bugs without running anything, if you ask it to. Try a build with extra warnings:
+
+```bash
+cmake -S . -B build-warn -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" \
+  -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic -Wshadow"
+cmake --build build-warn 2>&1 | grep warning
+```
+
+| Flag | Catches, for example |
+|---|---|
+| `-Wall -Wextra` | Unused variables, comparing signed with unsigned, a `switch` missing an `enum` value |
+| `-Wpedantic` | Non-standard compiler extensions |
+| `-Wshadow` | A local variable that hides a member or another variable with the same name |
+
+These flags only apply to `.cpp` files; on 🍎 add the same flags as `-DCMAKE_OBJCXX_FLAGS=...` to check the `.mm` files too.
+
+Read each warning and decide: real bug, or harmless? Many projects add `-Werror` in CI so warnings can't pile up.
+
+**clang-tidy** goes further: it knows hundreds of C++ bug patterns and style rules. It uses the `compile_commands.json` from Setup:
+
+```bash
+clang-tidy -p build src/core/AlertEngine.cpp
+# 🍎: brew install llvm, then run "$(brew --prefix llvm)/bin/clang-tidy"
+# 🐧: sudo dnf install clang-tools-extra   (Ubuntu: sudo apt install clang-tidy)
+```
+
+### A debugging checklist
+
+When something is wrong:
+
+1. **Make it happen reliably.** Ideally as a test with a fake reader and fake clock (Lesson 6). A bug you can trigger on demand is half fixed.
+2. **Predict, then observe.** Write down what you think each step should do, then check with logs or the debugger. The bug is where prediction and reality disagree.
+3. **Crash or weird value?** Rebuild with sanitizers first. They often point straight at the line.
+4. **Fix it and keep the test**, so it can't come back.
+
+> **Check yourself**
+> 1. Why debug a test instead of the whole app when you can?
+> 2. Your program prints the right answer on your machine and garbage on a friend's. What tool would you reach for first?
+>
+> <details><summary>Answers</summary>
+>
+> 1. A test runs the same inputs every time, uses fake time and fake swap readings, and finishes by itself. The app depends on real memory, real time and a GUI.
+> 2. Sanitizers (ASan + UBSan). "Works here, breaks there" is a classic sign of undefined behaviour, such as reading uninitialised or freed memory.
+> </details>
+
+---
+
 ## Exercises
+
+Want bigger, guided projects? **[Build It Yourself](PROJECTS.md)** walks you step by step through six real features the app is missing. Exercises 6, 7, 10 and 11 below are covered there in detail.
 
 Ordered from easiest to hardest. Each says which lessons it practises.
 
@@ -1529,19 +1851,20 @@ Ordered from easiest to hardest. Each says which lessons it practises.
 
 ### Core
 
-6. **Make the reset margin configurable** in the Settings dialog. Follow how `cooldownMinutes` flows from `SettingsDialog` → `SettingsStore` → `AlertEngine::Configuration`. *(L6, L9, L10)*
-7. **Keep a history.** Create a `SwapHistory` class in `core/` that stores the last 60 `SwapInfo` samples (use a fixed-size `std::array` as a ring buffer). Connect it to `sampleUpdated`. Write a test for it. *(L1, L7, L9)*
+6. **Make the reset margin configurable** in the Settings dialog. Follow how `cooldownMinutes` flows from `SettingsDialog` → `SettingsStore` → `AlertEngine::Configuration`. *(L6, L9, L10)* → [Guided: Project 1](PROJECTS.md#project-1--make-the-re-arm-margin-configurable)
+7. **Keep a history.** Create a `SwapHistory` class in `core/` that stores the last 60 `SwapInfo` samples (use a fixed-size `std::array` as a ring buffer). Connect it to `sampleUpdated`. Write a test for it. *(L1, L7, L9)* → [Guided: Project 3](PROJECTS.md#project-3--remember-recent-readings-swaphistory)
 8. **Write a test** that changes thresholds while monitoring is running and checks that the next sample uses the new ones. *(L6, L13)*
 
 ### Systems
 
 9. **`strace` the app.** 🐧 Run `strace -f -e trace=openat,kill,clock_gettime ./build/swap-alert` and identify each syscall from this guide. Why does `clock_gettime` probably *not* show up even though it's called? (Hint: look up **vDSO**.) *(L2, L4, L5)*
-10. **Show swap-in/swap-out rate**, not just total. 🐧 `/proc/vmstat` has `pswpin` / `pswpout` counters; 🍎 run `vm_stat` to see `Swapins` / `Swapouts`, then read them in code with `host_statistics64(..., HOST_VM_INFO64, ...)` (fields `swapins` / `swapouts` of `vm_statistics64`). You'll need to compute the *difference* between two samples. Add it to `SwapInfo` and both readers. *(L2, L3, L6)*
-11. **Close the PID-reuse window.** 🐧 Replace `kill()` in `LinuxProcessService::terminate()` with `pidfd_open()` + `pidfd_send_signal()` (Linux ≥ 5.3). Read `man 2 pidfd_open` and explain in a comment why this is safer. *(L5)*
+10. **Show swap-in/swap-out rate**, not just total. 🐧 `/proc/vmstat` has `pswpin` / `pswpout` counters; 🍎 run `vm_stat` to see `Swapins` / `Swapouts`, then read them in code with `host_statistics64(..., HOST_VM_INFO64, ...)` (fields `swapins` / `swapouts` of `vm_statistics64`). You'll need to compute the *difference* between two samples. Add it to `SwapInfo` and both readers. *(L2, L3, L6)* → [Guided: Project 5](PROJECTS.md#project-5--measure-swap-activity)
+11. **Close the PID-reuse window.** 🐧 Replace `kill()` in `LinuxProcessService::terminate()` with `pidfd_open()` + `pidfd_send_signal()` (Linux ≥ 5.3). Read `man 2 pidfd_open` and explain in a comment why this is safer. *(L5)* → [Guided: Project 6](PROJECTS.md#project-6--signal-the-right-process-always-pidfd)
+12. **Find a bug with a sanitizer.** On a scratch branch, add a `std::unique_ptr<SwapInfo> m_last;` member to `SwapMonitor`. In `refreshNow()`, keep `const SwapInfo* previous = m_last.get();`, then replace it with `m_last = std::make_unique<SwapInfo>(*info);`, then log `previous->usedBytes` when `previous` isn't null. Run `SwapMonitorTests` in both `build` and `build-asan` and compare. Explain in your own words why the normal build stayed quiet. *(L1, L7, L14)*
 
 ### Stretch
 
-12. **Add a third platform stub.** Create `platform/freebsd/` with a `FreeBsdSwapReader` that uses `sysctl` (FreeBSD has `vm.swap_info`). You don't need FreeBSD to get the structure right — the goal is to see how few files must change. *(L6, L13)*
+13. **Add a third platform stub.** Create `platform/freebsd/` with a `FreeBsdSwapReader` that uses `sysctl` (FreeBSD has `vm.swap_info`). You don't need FreeBSD to get the structure right — the goal is to see how few files must change. *(L6, L13)*
 
 ---
 
@@ -1550,23 +1873,39 @@ Ordered from easiest to hardest. Each says which lessons it practises.
 | Term | Meaning |
 |---|---|
 | **ABI / API** | API: the functions you call in source code. ABI: how compiled code calls them (binary layout). |
+| **Anonymous memory** | Memory not backed by a file (heap, stack). The only kind that goes to swap. |
 | **Atomic** | Happens all at once or not at all; nobody can observe a half-done state. |
 | **D-Bus** | Linux message bus for inter-process communication. |
+| **Debug build** | A build without optimisation and with debug symbols, so a debugger can map machine code back to your source lines. |
 | **errno** | Global variable where C system functions store the reason for their last failure. |
 | **Event loop** | The loop that waits for events and dispatches them to handlers. |
 | **File descriptor** | Small integer the kernel gives you to refer to an open file/socket. |
 | **Hysteresis** | Using different thresholds for going up vs coming down, to prevent flapping. |
-| **Monotonic clock** | A clock that never goes backwards. |
+| **Implicit sharing** | Qt's copy-on-write: copies of `QString`, `QVector` etc. share one buffer until one of them is modified. |
+| **Layout** | A Qt object that sizes and positions widgets automatically. |
+| **Memory compressor** | macOS feature that compresses inactive pages in RAM before resorting to swap. |
 | **moc** | Qt's code generator that implements signals/slots. |
+| **Modal** | A dialog that blocks its parent window until it's closed. |
+| **Monotonic clock** | A clock that never goes backwards. |
+| **Page fault** | The CPU trap that happens when a program touches a page that isn't in RAM; the kernel then loads it. |
 | **Page** | Fixed-size chunk of memory the OS moves between RAM and swap. |
+| **Parent / child (Qt)** | Ownership tree of `QObject`s: destroying a parent deletes its children. |
 | **PID / PPID / UID** | Process ID / parent's process ID / owning user's ID. |
+| **PSI** | Linux *pressure stall information*: how much time tasks spent waiting for memory, CPU or I/O. |
+| **QObject** | Base class of most Qt classes; provides signals/slots, parent/child ownership and runtime type info. |
+| **QVariant** | A Qt box that can hold a value of almost any type. |
 | **RAII** | Tying resource cleanup to an object's destructor. |
 | **RSS / footprint** | Memory of a process currently in physical RAM. |
-| **Signal (Unix)** | Kernel notification sent to a process, e.g. `SIGTERM`, `SIGKILL`. |
+| **Sanitizer** | Compiler option (ASan, UBSan…) that adds runtime checks to catch memory bugs and undefined behaviour. |
 | **Signal (Qt)** | An event a `QObject` emits, delivered to connected slots. Unrelated to Unix signals despite the name. |
+| **Signal (Unix)** | Kernel notification sent to a process, e.g. `SIGTERM`, `SIGKILL`. |
 | **Syscall** | A request from a program to the kernel. |
 | **TOCTOU** | Time-of-check to time-of-use race: the world changes between checking and acting. |
+| **Undefined behaviour** | Code the C++ standard gives no meaning to (e.g. use-after-free, signed overflow). Anything can happen. |
+| **Virtual memory** | Each process sees its own address space; the OS maps it onto physical RAM page by page. |
 | **vtable** | Hidden table of function pointers that makes `virtual` calls work. |
+| **Widget** | A visible UI element in Qt Widgets: window, button, label, table… |
+| **zram / zswap** | Linux features that keep swapped pages compressed in RAM instead of (or before) writing them to disk. |
 
 ---
 
@@ -1587,5 +1926,8 @@ Ordered from easiest to hardest. Each says which lessons it practises.
 - *A Tour of C++* — Bjarne Stroustrup. Short, modern overview of the C++ in Lessons 1, 6 and 7.
 - [cppreference.com](https://en.cppreference.com) — look up any standard library type (`std::optional`, `std::unique_ptr`…).
 - Qt documentation, in this order: [Object Trees & Ownership](https://doc.qt.io/qt-6/objecttrees.html), [Signals & Slots](https://doc.qt.io/qt-6/signalsandslots.html), [The Meta-Object System](https://doc.qt.io/qt-6/metaobjects.html), [Layout Management](https://doc.qt.io/qt-6/layout.html), [Implicit Sharing](https://doc.qt.io/qt-6/implicit-sharing.html), [The Event System](https://doc.qt.io/qt-6/eventsandfilters.html), and the [Qt Test tutorial](https://doc.qt.io/qt-6/qttestlib-tutorial1-example.html).
+- [LLDB tutorial](https://lldb.llvm.org/use/tutorial.html) and the [GDB documentation](https://sourceware.org/gdb/current/onlinedocs/gdb.html/) — Lesson 14.
+- [AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html) and [UndefinedBehaviorSanitizer](https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html) — what each sanitizer catches.
+- Linux kernel docs on [zram](https://docs.kernel.org/admin-guide/blockdev/zram.html), [zswap](https://docs.kernel.org/admin-guide/mm/zswap.html) and [PSI](https://docs.kernel.org/accounting/psi.html) — Lesson 0.
 - [freedesktop.org Desktop Notifications spec](https://specifications.freedesktop.org/notification-spec/latest/) — the D-Bus API used in Lesson 11.
 - *Mac OS X Internals* — Amit Singh. Older but still the best explanation of Mach, the XNU kernel and `sysctl`.

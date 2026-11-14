@@ -4,8 +4,9 @@
 
 #include <QDBusConnection>
 #include <QDBusConnectionInterface>
-#include <QDBusInterface>
 #include <QDBusMessage>
+#include <QDBusPendingCallWatcher>
+#include <QDBusPendingReply>
 #include <QDBusReply>
 #include <QProcess>
 #include <QStandardPaths>
@@ -65,31 +66,36 @@ void LinuxNotificationService::send(const QString& title, const QString& body, A
         return;
     }
 
-    QDBusInterface notifications(QString::fromLatin1(notificationService),
-        QString::fromLatin1(notificationPath), QString::fromLatin1(notificationService),
-        QDBusConnection::sessionBus());
-    notifications.setTimeout(3000);
     QVariantMap hints;
     hints.insert(QStringLiteral("desktop-entry"), QStringLiteral("com.swapalert.app"));
     hints.insert(QStringLiteral("urgency"),
         QVariant::fromValue(static_cast<uchar>(tier == AlertTier::Tier3 ? 2 : tier == AlertTier::Tier2 ? 1 : 0)));
     const int timeoutMs = tier == AlertTier::Tier1 ? 10'000 : 0;
-    const QDBusReply<uint> reply = notifications.call(QStringLiteral("Notify"),
-        QStringLiteral("Swap Alert"), uint(0), QStringLiteral("com.swapalert.app"), title, body,
-        QStringList {}, hints, timeoutMs);
-    if (!reply.isValid()) {
-        const QString message = QStringLiteral("Notification delivery failed: %1")
-                                    .arg(reply.error().message());
-        qCWarning(logNotifications) << message;
-        complete(std::move(callback),
-            {false, NotificationAuthorizationStatus::Authorized, message});
-        return;
-    }
+    QDBusMessage message = QDBusMessage::createMethodCall(QString::fromLatin1(notificationService),
+        QString::fromLatin1(notificationPath), QString::fromLatin1(notificationService),
+        QStringLiteral("Notify"));
+    message << QStringLiteral("Swap Alert") << uint(0) << QStringLiteral("com.swapalert.app") << title
+            << body << QStringList {} << hints << timeoutMs;
 
-    qCInfo(logNotifications) << "Notification delivered for tier" << static_cast<int>(tier)
-                             << "with ID" << reply.value();
-    complete(std::move(callback),
-        {true, NotificationAuthorizationStatus::Authorized, {}});
+    // Asynchronous, so a slow or hung notification daemon can't freeze the tray while we wait.
+    auto* watcher = new QDBusPendingCallWatcher(
+        QDBusConnection::sessionBus().asyncCall(message, 3000));
+    QObject::connect(watcher, &QDBusPendingCallWatcher::finished, watcher,
+        [tier, callback](QDBusPendingCallWatcher* call) {
+            call->deleteLater();
+            const QDBusPendingReply<uint> reply = *call;
+            if (reply.isError()) {
+                const QString errorMessage = QStringLiteral("Notification delivery failed: %1")
+                                                 .arg(reply.error().message());
+                qCWarning(logNotifications) << errorMessage;
+                complete(callback, {false, NotificationAuthorizationStatus::Authorized, errorMessage});
+                return;
+            }
+
+            qCInfo(logNotifications) << "Notification delivered for tier" << static_cast<int>(tier)
+                                     << "with ID" << reply.value();
+            complete(callback, {true, NotificationAuthorizationStatus::Authorized, {}});
+        });
 }
 
 bool LinuxNotificationService::openNotificationSettings(QString& errorMessage)

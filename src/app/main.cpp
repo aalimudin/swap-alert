@@ -147,12 +147,15 @@ int main(int argc, char* argv[])
     };
     const auto presentAlert = [&](AlertTier tier, const SwapInfo& info, const QString& body) {
         notificationService.send(notificationTitle(tier), body, tier,
-            [&, tier, info](const NotificationResult& result) {
+            // Copy tier, info and body: this callback can run after presentAlert has returned.
+            [&, tier, info, body](const NotificationResult& result) {
 #if defined(Q_OS_LINUX)
+                Q_UNUSED(info)
                 if (!result.success) {
                     tray.showNotification(notificationTitle(tier), body, tier);
                 }
 #else
+                Q_UNUSED(body)
                 if (!result.success && (tier == AlertTier::Tier1 || tier == AlertTier::Tier2)) {
                     warningDialog.showWarning(tier, info,
                         result.message.isEmpty()

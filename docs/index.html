@@ -39,6 +39,10 @@
   }
   .sidebar .brand { font-weight: 700; font-size: 1.05rem; margin: 0 8px 16px; color: var(--fg); display: block; }
   .sidebar ol { list-style: none; margin: 0; padding: 0; }
+  .docs-nav { display: flex; gap: 4px; margin: 0 0 16px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+  .docs-nav a { flex: 1; text-align: center; padding: 6px 4px; border-radius: 6px; font-size: .85rem; color: var(--fg-muted); }
+  .docs-nav a:hover { text-decoration: none; color: var(--fg); }
+  .docs-nav a.current { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
   .sidebar li a {
     display: block; padding: 5px 8px; border-radius: 6px; color: var(--fg-muted); font-size: .9rem; line-height: 1.35;
   }
@@ -107,7 +111,11 @@
 <body>
 <button class="menu-toggle" aria-expanded="false" aria-controls="sidebar">☰ Lessons</button>
 <nav class="sidebar" id="sidebar" aria-label="Lessons">
-  <a class="brand" href="#">Swap Alert Walkthrough</a>
+  <a class="brand" href="./">Learn with Swap Alert</a>
+  <div class="docs-nav">
+    <a href="./" data-doc="walkthrough">Code Walkthrough</a>
+    <a href="?doc=projects" data-doc="projects">Build It Yourself</a>
+  </div>
   <ol id="toc"></ol>
 </nav>
 <main>
@@ -122,7 +130,13 @@
 <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/languages/cmake.min.js"></script>
 <script>
 // The page renders the Markdown at load time so CODE_WALKTHROUGH.md stays the single source of truth.
-const SOURCE = "CODE_WALKTHROUGH.md";
+const DOCS = { walkthrough: "CODE_WALKTHROUGH.md", projects: "PROJECTS.md" };
+const DOC_BY_FILE = Object.fromEntries(Object.entries(DOCS).map(([key, file]) => [file, key]));
+const docKey = DOCS[new URLSearchParams(location.search).get("doc")] ? new URLSearchParams(location.search).get("doc") : "walkthrough";
+const SOURCE = DOCS[docKey];
+document.querySelector(`.docs-nav a[data-doc="${docKey}"]`)?.classList.add("current");
+document.getElementById("source-link").href = `https://github.com/aalimudin/swap-alert/blob/main/docs/${SOURCE}`;
+document.getElementById("source-link").textContent = `docs/${SOURCE}`;
 const REPO_DOCS = "https://github.com/aalimudin/swap-alert/blob/main/docs/";
 
 const content = document.getElementById("content");
@@ -170,10 +184,17 @@ function enhance() {
     t.replaceWith(wrap); wrap.append(t);
   });
 
-  // Relative links (e.g. RELEASING.md) point to GitHub, where they render properly
+  // Links between the guides stay on this site; other relative links (e.g. RELEASING.md) go to GitHub
   content.querySelectorAll("a[href]").forEach((a) => {
     const href = a.getAttribute("href");
-    if (!/^(#|[a-z]+:)/i.test(href)) a.href = new URL(href, REPO_DOCS).href;
+    if (/^(#|[a-z]+:)/i.test(href)) return;
+    const [file, hash] = href.split("#");
+    if (DOC_BY_FILE[file]) {
+      const key = DOC_BY_FILE[file];
+      a.href = (key === "walkthrough" ? "./" : `?doc=${key}`) + (hash ? `#${hash}` : "");
+    } else {
+      a.href = new URL(href, REPO_DOCS).href;
+    }
   });
 
   // Syntax highlighting ("text" blocks are diagrams; leave them alone)

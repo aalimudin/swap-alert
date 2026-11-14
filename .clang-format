@@ -1,0 +1,8 @@
+# Matches the existing code style closely. Format only the lines you change, e.g.:
+#   git clang-format            (formats your staged changes)
+# Running it over whole files will also touch some existing lines.
+BasedOnStyle: WebKit
+Cpp11BracedListStyle: true
+SpaceBeforeCpp11BracedList: true
+PenaltyBreakBeforeFirstCallParameter: 1000
+AlwaysBreakBeforeMultilineStrings: false
